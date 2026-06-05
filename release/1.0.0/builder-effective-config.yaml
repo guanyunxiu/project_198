@@ -1,0 +1,27 @@
+directories:
+  output: release/${version}
+  buildResources: build
+appId: com.novel.reader
+productName: NovelReader
+files:
+  - filter:
+      - dist
+      - dist-electron
+asar: true
+asarUnpack:
+  - node_modules/better-sqlite3
+mac:
+  target:
+    - target: dmg
+      arch:
+        - x64
+        - arm64
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+electronVersion: 28.3.3

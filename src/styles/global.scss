@@ -1,0 +1,105 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body, #app {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+}
+
+:root {
+  --bg-primary: #ffffff;
+  --bg-secondary: #f5f5f5;
+  --bg-tertiary: #fafafa;
+  --text-primary: #333333;
+  --text-secondary: #666666;
+  --text-tertiary: #999999;
+  --border-color: #e5e5e5;
+  --accent-color: #409eff;
+  --accent-hover: #66b1ff;
+  --reader-bg: #fdfbf7;
+  --reader-text: #333333;
+}
+
+:root.theme-dark {
+  --bg-primary: #1a1a2e;
+  --bg-secondary: #16213e;
+  --bg-tertiary: #0f0f1a;
+  --text-primary: #e5e5e5;
+  --text-secondary: #a0a0a0;
+  --text-tertiary: #666666;
+  --border-color: #2d2d44;
+  --accent-color: #66b1ff;
+  --accent-hover: #8cc5ff;
+  --reader-bg: #1a1a2e;
+  --reader-text: #c0c0c0;
+}
+
+:root.theme-eye {
+  --bg-primary: #c7edcc;
+  --bg-secondary: #b8e8c2;
+  --bg-tertiary: #d4f0d9;
+  --text-primary: #2f4f4f;
+  --text-secondary: #3d5c5c;
+  --text-tertiary: #5a7a7a;
+  --border-color: #a0d4a8;
+  --accent-color: #2e8b57;
+  --accent-hover: #3cb371;
+  --reader-bg: #c7edcc;
+  --reader-text: #2f4f4f;
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--bg-secondary);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border-color);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-tertiary);
+}
+
+.reader-content {
+  font-size: v-bind('readingConfig.fontSize + "px"');
+  line-height: v-bind('readingConfig.lineHeight');
+  letter-spacing: v-bind('readingConfig.letterSpacing + "px"');
+  color: var(--reader-text);
+  background: var(--reader-bg);
+  padding: v-bind('readingConfig.pageMargin + "px"');
+  text-align: justify;
+}
+
+.reader-content p {
+  margin-bottom: 1em;
+  text-indent: 2em;
+}
+
+.el-drawer__body {
+  padding: 0 !important;
+}
+
+.glass-effect {
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  background: rgba(255, 255, 255, 0.8);
+}
+
+.theme-dark .glass-effect {
+  background: rgba(26, 26, 46, 0.8);
+}
+
+.theme-eye .glass-effect {
+  background: rgba(199, 237, 204, 0.8);
+}
