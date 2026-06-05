@@ -18,9 +18,17 @@ import {
   Star,
   Clock,
   Folder,
-  Loading
+  Loading,
+  Check,
+  Close,
+  Download,
+  Upload,
+  Select,
+  Document,
+  Notebook,
+  Timer
 } from '@element-plus/icons-vue'
-import type { Book } from '@/types'
+import type { Book, Category } from '@/types'
 
 const router = useRouter()
 const booksStore = useBooksStore()
@@ -29,6 +37,18 @@ const configStore = useConfigStore()
 const searchKeyword = ref('')
 const showAddMenu = ref(false)
 const isScanning = ref(false)
+const showEditBookDialog = ref(false)
+const showEditCategoryDialog = ref(false)
+const showAddCategoryDialog = ref(false)
+const editingBook = ref<Book | null>(null)
+const editingCategory = ref<Category | null>(null)
+const newCategoryName = ref('')
+const editBookForm = ref({
+  title: '',
+  author: '',
+  notes: '',
+  categoryId: null as number | null
+})
 
 const filteredBooks = computed(() => {
   let books = booksStore.filteredBooks
@@ -50,6 +70,8 @@ const pinnedBooks = computed(() =>
 const unpinnedBooks = computed(() =>
   filteredBooks.value.filter(book => book.isPinned === 0)
 )
+
+const selectedCount = computed(() => booksStore.selectedBooks.size)
 
 onMounted(async () => {
   await booksStore.loadBooks()
@@ -84,7 +106,11 @@ async function handleScanFolder() {
 }
 
 async function handleContinueRead(book: Book) {
-  router.push(`/reader/${book.id}`)
+  if (booksStore.isBatchMode) {
+    booksStore.toggleBookSelection(book.id)
+  } else {
+    router.push(`/reader/${book.id}`)
+  }
 }
 
 async function handleTogglePin(book: Book) {
@@ -111,7 +137,35 @@ async function handleDeleteBook(book: Book) {
 }
 
 function handleEditBook(book: Book) {
-  ElMessage.info('编辑功能开发中')
+  editingBook.value = book
+  editBookForm.value = {
+    title: book.title,
+    author: book.author,
+    notes: book.notes || '',
+    categoryId: book.categoryId
+  }
+  showEditBookDialog.value = true
+}
+
+async function saveEditBook() {
+  if (!editingBook.value) return
+  if (!editBookForm.value.title.trim()) {
+    ElMessage.warning('书名不能为空')
+    return
+  }
+  try {
+    await booksStore.updateBook(editingBook.value.id, {
+      title: editBookForm.value.title.trim(),
+      author: editBookForm.value.author.trim(),
+      notes: editBookForm.value.notes,
+      categoryId: editBookForm.value.categoryId
+    })
+    ElMessage.success('保存成功')
+    showEditBookDialog.value = false
+    editingBook.value = null
+  } catch (err) {
+    ElMessage.error('保存失败')
+  }
 }
 
 function openSettings() {
@@ -141,6 +195,139 @@ function getProgressPercent(book: Book): number {
   if (book.totalPages === 0) return 0
   return Math.round((book.lastReadPage / book.totalPages) * 100)
 }
+
+function handleAddCategory() {
+  newCategoryName.value = ''
+  showAddCategoryDialog.value = true
+}
+
+async function saveAddCategory() {
+  if (!newCategoryName.value.trim()) {
+    ElMessage.warning('分类名称不能为空')
+    return
+  }
+  try {
+    await booksStore.addCategory(newCategoryName.value.trim())
+    ElMessage.success('分类添加成功')
+    showAddCategoryDialog.value = false
+  } catch (err) {
+    ElMessage.error('添加失败')
+  }
+}
+
+function handleEditCategory(category: Category) {
+  editingCategory.value = category
+  newCategoryName.value = category.name
+  showEditCategoryDialog.value = true
+}
+
+async function saveEditCategory() {
+  if (!editingCategory.value || !newCategoryName.value.trim()) {
+    ElMessage.warning('分类名称不能为空')
+    return
+  }
+  try {
+    await booksStore.updateCategory(editingCategory.value.id, newCategoryName.value.trim())
+    ElMessage.success('分类更新成功')
+    showEditCategoryDialog.value = false
+    editingCategory.value = null
+  } catch (err) {
+    ElMessage.error('更新失败')
+  }
+}
+
+async function handleDeleteCategory(category: Category) {
+  try {
+    await ElMessageBox.confirm(
+      `确定要删除分类「${category.name}」吗？该分类下的书籍将移动到「全部」分类。`,
+      '删除确认',
+      {
+        confirmButtonText: '删除',
+        cancelButtonText: '取消',
+        type: 'warning'
+      }
+    )
+    await booksStore.deleteCategory(category.id)
+    ElMessage.success('删除成功')
+  } catch {
+    // User cancelled
+  }
+}
+
+function toggleBatchMode() {
+  booksStore.toggleBatchMode()
+}
+
+function handleSelect() {
+  if (selectedCount.value === filteredBooks.value.length) {
+    booksStore.clearSelection()
+  } else {
+    booksStore.selectAllBooks()
+  }
+}
+
+async function handleBatchDelete() {
+  if (selectedCount.value === 0) {
+    ElMessage.warning('请先选择要删除的书籍')
+    return
+  }
+  try {
+    await ElMessageBox.confirm(
+      `确定要删除选中的 ${selectedCount.value} 本书籍吗？`,
+      '批量删除确认',
+      {
+        confirmButtonText: '删除',
+        cancelButtonText: '取消',
+        type: 'warning'
+      }
+    )
+    await booksStore.batchDeleteSelected()
+    ElMessage.success('批量删除成功')
+    booksStore.toggleBatchMode()
+  } catch {
+    // User cancelled
+  }
+}
+
+async function handleBatchCategory(categoryId: number | null) {
+  if (selectedCount.value === 0) {
+    ElMessage.warning('请先选择要移动的书籍')
+    return
+  }
+  await booksStore.batchUpdateCategory(categoryId)
+  const categoryName = categoryId === null ? '全部' : booksStore.categories.find(c => c.id === categoryId)?.name || '全部'
+  ElMessage.success(`已将 ${selectedCount.value} 本书籍移动到「${categoryName}」`)
+}
+
+async function handleExportJson() {
+  if (selectedCount.value === 0) {
+    ElMessage.warning('请先选择要导出的书籍')
+    return
+  }
+  try {
+    const bookIds = Array.from(booksStore.selectedBooks)
+    const data = await booksStore.batchExport(bookIds)
+    const success = await booksStore.exportToJson(data)
+    if (success) {
+      ElMessage.success(`成功导出 ${data.length} 本书籍数据`)
+    }
+  } catch (err) {
+    ElMessage.error('导出失败')
+  }
+}
+
+async function handleImportJson() {
+  try {
+    const result = await booksStore.importFromJson()
+    if (result.success) {
+      ElMessage.success(`成功导入 ${result.importedIds?.length || 0} 本书籍`)
+    } else {
+      ElMessage.error(result.error || '导入失败')
+    }
+  } catch (err) {
+    ElMessage.error('导入失败')
+  }
+}
 </script>
 
 <template>
@@ -165,27 +352,69 @@ function getProgressPercent(book: Book): number {
       </div>
 
       <div class="header-right">
-        <el-button @click="openExplorer" :icon="FolderOpened">
-          文件浏览
-        </el-button>
-        <el-dropdown trigger="click" @command="handleAddFiles">
-          <el-button type="primary" :icon="Plus">
-            添加书籍
+        <template v-if="booksStore.isBatchMode">
+          <span class="batch-info">已选择 {{ selectedCount }} 本</span>
+          <el-button @click="handleSelect" :icon="Select">
+            {{ selectedCount === filteredBooks.length ? '取消全选' : '全选' }}
           </el-button>
-          <template #dropdown>
-            <el-dropdown-menu>
-              <el-dropdown-item command="files">
-                <el-icon><Files /></el-icon>
-                从文件添加
-              </el-dropdown-item>
-              <el-dropdown-item @click="handleScanFolder">
-                <el-icon><Folder /></el-icon>
-                扫描文件夹
-              </el-dropdown-item>
-            </el-dropdown-menu>
-          </template>
-        </el-dropdown>
-        <el-button circle :icon="Setting" @click="openSettings" />
+          <el-dropdown trigger="click">
+            <el-button :icon="Folder">
+              移动分类
+            </el-button>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item @click="handleBatchCategory(null)">
+                  全部
+                </el-dropdown-item>
+                <el-dropdown-item
+                  v-for="cat in booksStore.categories"
+                  :key="cat.id"
+                  @click="handleBatchCategory(cat.id)"
+                >
+                  {{ cat.name }}
+                </el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
+          <el-button type="danger" :icon="Delete" @click="handleBatchDelete">
+            批量删除
+          </el-button>
+          <el-button :icon="Download" @click="handleExportJson">
+            导出JSON
+          </el-button>
+          <el-button :icon="Close" @click="toggleBatchMode">
+            取消
+          </el-button>
+        </template>
+        <template v-else>
+          <el-button @click="openExplorer" :icon="FolderOpened">
+            文件浏览
+          </el-button>
+          <el-button :icon="Upload" @click="handleImportJson">
+            导入JSON
+          </el-button>
+          <el-button :icon="Select" @click="toggleBatchMode">
+            批量管理
+          </el-button>
+          <el-dropdown trigger="click">
+            <el-button type="primary" :icon="Plus">
+              添加书籍
+            </el-button>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item @click="handleAddFiles">
+                  <el-icon><Files /></el-icon>
+                  从文件添加
+                </el-dropdown-item>
+                <el-dropdown-item @click="handleScanFolder">
+                  <el-icon><Folder /></el-icon>
+                  扫描文件夹
+                </el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
+          <el-button circle :icon="Setting" @click="openSettings" />
+        </template>
       </div>
     </header>
 
@@ -195,6 +424,7 @@ function getProgressPercent(book: Book): number {
           <h3 class="section-title">
             <el-icon><Folder /></el-icon>
             分类
+            <el-button class="add-category-btn" link :icon="Plus" size="small" @click="handleAddCategory" />
           </h3>
           <div class="category-list">
             <div
@@ -216,6 +446,10 @@ function getProgressPercent(book: Book): number {
               <span class="category-count">
                 {{ booksStore.books.filter(b => b.categoryId === cat.id).length }}
               </span>
+              <div class="category-actions" @click.stop>
+                <el-button link size="small" :icon="Edit" @click="handleEditCategory(cat)" />
+                <el-button link size="small" :icon="Delete" @click="handleDeleteCategory(cat)" />
+              </div>
             </div>
           </div>
         </div>
@@ -238,6 +472,18 @@ function getProgressPercent(book: Book): number {
               <el-icon><Setting /></el-icon>
               <span>阅读设置</span>
             </div>
+            <div class="action-item" @click="toggleBatchMode">
+              <el-icon><Select /></el-icon>
+              <span>批量管理</span>
+            </div>
+            <div class="action-item" @click="handleImportJson">
+              <el-icon><Upload /></el-icon>
+              <span>导入数据</span>
+            </div>
+            <div class="action-item" @click="handleExportJson" v-if="filteredBooks.length > 0">
+              <el-icon><Download /></el-icon>
+              <span>导出数据</span>
+            </div>
           </div>
         </div>
       </aside>
@@ -259,6 +505,7 @@ function getProgressPercent(book: Book): number {
                 v-for="book in pinnedBooks"
                 :key="book.id"
                 class="book-card"
+                :class="{ selected: booksStore.selectedBooks.has(book.id) }"
                 @click="handleContinueRead(book)"
               >
                 <div class="book-cover">
@@ -266,10 +513,23 @@ function getProgressPercent(book: Book): number {
                   <div class="book-badge pinned">
                     <el-icon :size="12"><Top /></el-icon>
                   </div>
+                  <div v-if="booksStore.isBatchMode" class="book-select" @click.stop="booksStore.toggleBookSelection(book.id)">
+                    <el-icon v-if="booksStore.selectedBooks.has(book.id)" :size="16"><Check /></el-icon>
+                  </div>
                 </div>
                 <div class="book-info">
                   <h3 class="book-title" :title="book.title">{{ book.title }}</h3>
                   <p class="book-author">{{ book.author }}</p>
+                  <div class="book-meta">
+                    <div class="meta-item" :title="'阅读时长：' + booksStore.formatReadingTime(book.totalReadingTime)">
+                      <el-icon :size="12"><Timer /></el-icon>
+                      <span>{{ booksStore.formatReadingTime(book.totalReadingTime) }}</span>
+                    </div>
+                    <div v-if="book.notes" class="meta-item notes-badge" :title="book.notes">
+                      <el-icon :size="12"><Notebook /></el-icon>
+                      <span>有备注</span>
+                    </div>
+                  </div>
                   <div class="book-progress">
                     <div class="progress-bar">
                       <div
@@ -323,14 +583,28 @@ function getProgressPercent(book: Book): number {
                 v-for="book in unpinnedBooks"
                 :key="book.id"
                 class="book-card"
+                :class="{ selected: booksStore.selectedBooks.has(book.id) }"
                 @click="handleContinueRead(book)"
               >
                 <div class="book-cover">
                   <span class="cover-icon">{{ getFileIcon(book.fileType) }}</span>
+                  <div v-if="booksStore.isBatchMode" class="book-select" @click.stop="booksStore.toggleBookSelection(book.id)">
+                    <el-icon v-if="booksStore.selectedBooks.has(book.id)" :size="16"><Check /></el-icon>
+                  </div>
                 </div>
                 <div class="book-info">
                   <h3 class="book-title" :title="book.title">{{ book.title }}</h3>
                   <p class="book-author">{{ book.author }}</p>
+                  <div class="book-meta">
+                    <div class="meta-item" :title="'阅读时长：' + booksStore.formatReadingTime(book.totalReadingTime)">
+                      <el-icon :size="12"><Timer /></el-icon>
+                      <span>{{ booksStore.formatReadingTime(book.totalReadingTime) }}</span>
+                    </div>
+                    <div v-if="book.notes" class="meta-item notes-badge" :title="book.notes">
+                      <el-icon :size="12"><Notebook /></el-icon>
+                      <span>有备注</span>
+                    </div>
+                  </div>
                   <div class="book-progress">
                     <div class="progress-bar">
                       <div
@@ -368,6 +642,77 @@ function getProgressPercent(book: Book): number {
         </template>
       </main>
     </div>
+
+    <el-dialog
+      v-model="showEditBookDialog"
+      title="编辑书籍信息"
+      width="500px"
+      :close-on-click-modal="false"
+    >
+      <el-form :model="editBookForm" label-width="80px">
+        <el-form-item label="书名">
+          <el-input v-model="editBookForm.title" placeholder="请输入书名" />
+        </el-form-item>
+        <el-form-item label="作者">
+          <el-input v-model="editBookForm.author" placeholder="请输入作者" />
+        </el-form-item>
+        <el-form-item label="分类">
+          <el-select v-model="editBookForm.categoryId" placeholder="选择分类" style="width: 100%">
+            <el-option :value="null" label="全部" />
+            <el-option
+              v-for="cat in booksStore.categories"
+              :key="cat.id"
+              :label="cat.name"
+              :value="cat.id"
+            />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="备注">
+          <el-input
+            v-model="editBookForm.notes"
+            type="textarea"
+            :rows="4"
+            placeholder="添加阅读笔记或备注..."
+          />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="showEditBookDialog = false">取消</el-button>
+        <el-button type="primary" @click="saveEditBook">保存</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog
+      v-model="showAddCategoryDialog"
+      title="添加分类"
+      width="400px"
+    >
+      <el-form label-width="80px">
+        <el-form-item label="分类名称">
+          <el-input v-model="newCategoryName" placeholder="请输入分类名称" @keyup.enter="saveAddCategory" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="showAddCategoryDialog = false">取消</el-button>
+        <el-button type="primary" @click="saveAddCategory">添加</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog
+      v-model="showEditCategoryDialog"
+      title="编辑分类"
+      width="400px"
+    >
+      <el-form label-width="80px">
+        <el-form-item label="分类名称">
+          <el-input v-model="newCategoryName" placeholder="请输入分类名称" @keyup.enter="saveEditCategory" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="showEditCategoryDialog = false">取消</el-button>
+        <el-button type="primary" @click="saveEditCategory">保存</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -417,6 +762,13 @@ function getProgressPercent(book: Book): number {
   .header-right {
     display: flex;
     gap: 12px;
+    align-items: center;
+
+    .batch-info {
+      color: var(--text-secondary);
+      font-size: 14px;
+      margin-right: 8px;
+    }
   }
 }
 
@@ -439,12 +791,17 @@ function getProgressPercent(book: Book): number {
     .section-title {
       display: flex;
       align-items: center;
+      justify-content: space-between;
       gap: 8px;
       padding: 0 16px;
       font-size: 14px;
       font-weight: 600;
       color: var(--text-secondary);
       margin-bottom: 8px;
+
+      .add-category-btn {
+        padding: 0;
+      }
     }
   }
 
@@ -456,9 +813,14 @@ function getProgressPercent(book: Book): number {
       padding: 10px 16px;
       cursor: pointer;
       transition: all 0.2s;
+      position: relative;
 
       &:hover {
         background: var(--bg-secondary);
+
+        .category-actions {
+          opacity: 1;
+        }
       }
 
       &.active {
@@ -473,6 +835,10 @@ function getProgressPercent(book: Book): number {
 
       .category-name {
         font-size: 14px;
+        flex: 1;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
       }
 
       .category-count {
@@ -481,6 +847,16 @@ function getProgressPercent(book: Book): number {
         border-radius: 10px;
         background: var(--bg-secondary);
         color: var(--text-tertiary);
+        min-width: 24px;
+        text-align: center;
+      }
+
+      .category-actions {
+        display: flex;
+        gap: 4px;
+        opacity: 0;
+        transition: opacity 0.2s;
+        margin-left: 8px;
       }
     }
   }
@@ -565,13 +941,18 @@ function getProgressPercent(book: Book): number {
     overflow: hidden;
     cursor: pointer;
     transition: all 0.3s ease;
-    border: 1px solid var(--border-color);
+    border: 2px solid transparent;
     position: relative;
 
     &:hover {
       transform: translateY(-4px);
       box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
       border-color: var(--accent-color);
+    }
+
+    &.selected {
+      border-color: var(--accent-color);
+      box-shadow: 0 0 0 2px rgba(64, 158, 255, 0.3);
     }
 
     .book-cover {
@@ -604,6 +985,22 @@ function getProgressPercent(book: Book): number {
           color: #8b6914;
         }
       }
+
+      .book-select {
+        position: absolute;
+        top: 8px;
+        left: 8px;
+        width: 28px;
+        height: 28px;
+        border-radius: 50%;
+        background: rgba(255, 255, 255, 0.9);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: var(--accent-color);
+        border: 2px solid var(--accent-color);
+        cursor: pointer;
+      }
     }
 
     .book-info {
@@ -626,6 +1023,28 @@ function getProgressPercent(book: Book): number {
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
+      }
+
+      .book-meta {
+        display: flex;
+        gap: 8px;
+        margin-bottom: 8px;
+        flex-wrap: wrap;
+
+        .meta-item {
+          display: flex;
+          align-items: center;
+          gap: 4px;
+          font-size: 11px;
+          color: var(--text-tertiary);
+          background: var(--bg-secondary);
+          padding: 2px 6px;
+          border-radius: 4px;
+
+          &.notes-badge {
+            color: var(--accent-color);
+          }
+        }
       }
 
       .book-progress {
@@ -660,7 +1079,7 @@ function getProgressPercent(book: Book): number {
     .book-actions {
       position: absolute;
       top: 8px;
-      left: 8px;
+      right: 8px;
       opacity: 0;
       transition: opacity 0.2s;
     }

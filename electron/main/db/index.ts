@@ -27,6 +27,7 @@ export function initDatabase(): void {
   db.pragma('foreign_keys = ON')
 
   createTables()
+  migrateDatabase()
   insertDefaultCategory()
 }
 
@@ -55,6 +56,8 @@ function createTables(): void {
       lastReadPage INTEGER DEFAULT 0,
       lastReadPosition INTEGER DEFAULT 0,
       lastReadTime INTEGER DEFAULT 0,
+      totalReadingTime INTEGER DEFAULT 0,
+      notes TEXT DEFAULT '',
       createdAt INTEGER NOT NULL,
       updatedAt INTEGER NOT NULL,
       FOREIGN KEY (categoryId) REFERENCES categories(id) ON DELETE SET NULL
@@ -88,6 +91,20 @@ function createTables(): void {
     CREATE INDEX IF NOT EXISTS idx_bookmarks_book ON bookmarks(bookId);
     CREATE INDEX IF NOT EXISTS idx_progress_book ON reading_progress(bookId);
   `)
+}
+
+function migrateDatabase(): void {
+  const database = getDb()
+  
+  const columns = database.prepare("PRAGMA table_info(books)").all() as { name: string }[]
+  const columnNames = columns.map(c => c.name)
+  
+  if (!columnNames.includes('totalReadingTime')) {
+    database.exec('ALTER TABLE books ADD COLUMN totalReadingTime INTEGER DEFAULT 0')
+  }
+  if (!columnNames.includes('notes')) {
+    database.exec('ALTER TABLE books ADD COLUMN notes TEXT DEFAULT \'\'')
+  }
 }
 
 function insertDefaultCategory(): void {
@@ -144,13 +161,15 @@ export const bookDb = {
       INSERT INTO books (
         title, author, filePath, fileType, coverPath, encoding,
         totalPages, totalCharacters, categoryId, isPinned,
-        lastReadPage, lastReadPosition, lastReadTime, createdAt, updatedAt
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        lastReadPage, lastReadPosition, lastReadTime, totalReadingTime, notes,
+        createdAt, updatedAt
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
     const result = stmt.run(
       book.title, book.author, book.filePath, book.fileType, book.coverPath,
       book.encoding, book.totalPages, book.totalCharacters, book.categoryId,
       book.isPinned, book.lastReadPage, book.lastReadPosition, book.lastReadTime,
+      book.totalReadingTime || 0, book.notes || '',
       now, now
     )
     return Number(result.lastInsertRowid)
@@ -174,6 +193,12 @@ export const bookDb = {
     getDb()
       .prepare('UPDATE books SET lastReadPage = ?, lastReadPosition = ?, lastReadTime = ?, updatedAt = ? WHERE id = ?')
       .run(page, position, now, now, bookId)
+  },
+
+  addReadingTime(bookId: number, duration: number): void {
+    getDb()
+      .prepare('UPDATE books SET totalReadingTime = COALESCE(totalReadingTime, 0) + ?, updatedAt = ? WHERE id = ?')
+      .run(duration, Date.now(), bookId)
   },
 
   togglePin(id: number): void {

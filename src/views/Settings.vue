@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, reactive } from 'vue'
 import { useRouter } from 'vue-router'
 import { useConfigStore } from '@/stores/config'
 import { useBooksStore } from '@/stores/books'
@@ -12,8 +12,18 @@ import {
   Setting as SettingIcon,
   Reading,
   Monitor,
-  Refresh
+  Refresh,
+  Key,
+  Monitor as MonitorIcon,
+  DataAnalysis,
+  Download,
+  Upload,
+  RefreshRight,
+  Warning,
+  FullScreen,
+  Top
 } from '@element-plus/icons-vue'
+import type { ShortcutConfig } from '@/types'
 
 const router = useRouter()
 const configStore = useConfigStore()
@@ -22,10 +32,38 @@ const booksStore = useBooksStore()
 const activeTab = ref('reading')
 const newCategoryName = ref('')
 const isScanning = ref(false)
+const editingShortcut = ref<keyof ShortcutConfig | null>(null)
+const recordingKey = ref(false)
+const tempShortcut = ref('')
+
+const shortcutLabels: Record<keyof ShortcutConfig, { label: string; description: string }> = {
+  nextPage: { label: '下一页', description: '翻到下一页' },
+  prevPage: { label: '上一页', description: '翻到上一页' },
+  addBookmark: { label: '添加书签', description: '在当前位置添加书签' },
+  goBack: { label: '返回书架', description: '返回书架页面' },
+  toggleFullscreen: { label: '切换全屏', description: '开启/关闭全屏模式' },
+  toggleTheme: { label: '切换主题', description: '在日间/夜间/护眼主题间切换' },
+  toggleAlwaysOnTop: { label: '切换置顶', description: '开启/关闭窗口置顶' },
+  search: { label: '搜索', description: '打开搜索框' },
+  toggleSidebar: { label: '切换侧边栏', description: '显示/隐藏侧边栏' }
+}
+
+const windowSettings = reactive({
+  rememberWindowSize: true,
+  rememberWindowPosition: true,
+  startFullscreen: false,
+  startMinimized: false
+})
 
 onMounted(async () => {
   await configStore.loadConfig()
   await booksStore.loadCategories()
+  if (configStore.appConfig) {
+    windowSettings.rememberWindowSize = configStore.appConfig.rememberWindowSize ?? true
+    windowSettings.rememberWindowPosition = configStore.appConfig.rememberWindowPosition ?? true
+    windowSettings.startFullscreen = configStore.appConfig.startFullscreen ?? false
+    windowSettings.startMinimized = configStore.appConfig.startMinimized ?? false
+  }
 })
 
 function goBack() {
@@ -96,14 +134,196 @@ function resetReadingConfig() {
     pageMargin: 40,
     theme: 'light',
     readMode: 'scroll',
-    pageChars: 800
+    pageChars: 800,
+    highlightColor: '#ffeb3b'
   })
   ElMessage.success('阅读设置已重置')
+}
+
+function startEditShortcut(action: keyof ShortcutConfig) {
+  editingShortcut.value = action
+  recordingKey.value = true
+  tempShortcut.value = ''
+}
+
+function handleKeyDown(e: KeyEvent) {
+  if (!recordingKey.value || !editingShortcut.value) return
+  
+  e.preventDefault()
+  e.stopPropagation()
+  
+  const keys: string[] = []
+  
+  if (e.ctrlKey) keys.push('Ctrl')
+  if (e.altKey) keys.push('Alt')
+  if (e.shiftKey) keys.push('Shift')
+  if (e.metaKey) keys.push('Cmd')
+  
+  let keyName = e.key
+  if (keyName === ' ') keyName = 'Space'
+  else if (keyName === 'ArrowRight') keyName = '→'
+  else if (keyName === 'ArrowLeft') keyName = '←'
+  else if (keyName === 'ArrowUp') keyName = '↑'
+  else if (keyName === 'ArrowDown') keyName = '↓'
+  else if (keyName === 'Escape') keyName = 'Esc'
+  else if (keyName === 'Enter') keyName = 'Enter'
+  else if (keyName === 'Backspace') keyName = 'Backspace'
+  else if (keyName === 'Tab') keyName = 'Tab'
+  else keyName = keyName.toUpperCase()
+  
+  if (!['Control', 'Alt', 'Shift', 'Meta'].includes(e.key)) {
+    keys.push(keyName)
+    tempShortcut.value = keys.join(' + ')
+  } else {
+    tempShortcut.value = keys.join(' + ') + ' + ...'
+  }
+}
+
+function handleKeyUp(e: KeyEvent) {
+  if (!recordingKey.value || !editingShortcut.value) return
+  
+  e.preventDefault()
+  e.stopPropagation()
+  
+  if (tempShortcut.value.includes('...')) return
+  
+  if (!tempShortcut.value || tempShortcut.value === '...') {
+    cancelEditShortcut()
+    return
+  }
+  
+  const modifiers = ['Ctrl', 'Alt', 'Shift', 'Cmd']
+  const hasKey = tempShortcut.value.split('+').some(p => !modifiers.includes(p.trim()))
+  
+  if (!hasKey) {
+    ElMessage.warning('请至少按下一个非修饰键')
+    return
+  }
+  
+  saveShortcut()
+}
+
+async function saveShortcut() {
+  if (!editingShortcut.value || !tempShortcut.value) return
+  
+  let storageValue = tempShortcut.value
+  storageValue = storageValue.replace(/→/g, 'ArrowRight')
+  storageValue = storageValue.replace(/←/g, 'ArrowLeft')
+  storageValue = storageValue.replace(/↑/g, 'ArrowUp')
+  storageValue = storageValue.replace(/↓/g, 'ArrowDown')
+  storageValue = storageValue.replace(/Esc/g, 'Escape')
+  storageValue = storageValue.replace(/Space/g, ' ')
+  
+  try {
+    await configStore.updateShortcuts({ [editingShortcut.value]: storageValue })
+    ElMessage.success('快捷键已更新')
+  } catch (err) {
+    ElMessage.error('保存失败')
+  }
+  
+  cancelEditShortcut()
+}
+
+function cancelEditShortcut() {
+  editingShortcut.value = null
+  recordingKey.value = false
+  tempShortcut.value = ''
+}
+
+async function resetShortcuts() {
+  try {
+    await ElMessageBox.confirm(
+      '确定要重置所有快捷键为默认值吗？',
+      '重置确认',
+      {
+        confirmButtonText: '重置',
+        cancelButtonText: '取消',
+        type: 'warning'
+      }
+    )
+    await configStore.updateShortcuts({
+      nextPage: 'ArrowRight',
+      prevPage: 'ArrowLeft',
+      addBookmark: 'b',
+      goBack: 'Escape',
+      toggleFullscreen: 'F11',
+      toggleTheme: 't',
+      toggleAlwaysOnTop: 'p',
+      search: 'Ctrl+f',
+      toggleSidebar: 's'
+    })
+    ElMessage.success('快捷键已重置')
+  } catch {
+    // User cancelled
+  }
+}
+
+async function updateWindowSetting(key: keyof typeof windowSettings, value: boolean) {
+  windowSettings[key] = value
+  await configStore.updateAppConfig({ [key]: value })
+}
+
+async function exportAllData() {
+  try {
+    const data = await booksStore.batchExport(booksStore.books.map(b => b.id))
+    const success = await booksStore.exportToJson(data)
+    if (success) {
+      ElMessage.success(`成功导出 ${data.length} 本书籍数据`)
+    }
+  } catch (err) {
+    ElMessage.error('导出失败')
+  }
+}
+
+async function importData() {
+  try {
+    const result = await booksStore.importFromJson()
+    if (result.success) {
+      ElMessage.success(`成功导入 ${result.importedIds?.length || 0} 本书籍`)
+    } else {
+      ElMessage.error(result.error || '导入失败')
+    }
+  } catch (err) {
+    ElMessage.error('导入失败')
+  }
+}
+
+async function clearAllData() {
+  try {
+    await ElMessageBox.confirm(
+      '确定要清空所有数据吗？此操作不可恢复！\n\n将删除：所有书籍记录、书签、阅读进度、分类、配置',
+      '危险操作确认',
+      {
+        confirmButtonText: '确认清空',
+        cancelButtonText: '取消',
+        type: 'error',
+        dangerouslyUseHTMLString: false
+      }
+    )
+    ElMessage.warning('此功能暂未实现，如需重置请删除应用数据目录')
+  } catch {
+    // User cancelled
+  }
+}
+
+function displayShortcut(value: string): string {
+  let display = value
+  display = display.replace(/ArrowRight/g, '→')
+  display = display.replace(/ArrowLeft/g, '←')
+  display = display.replace(/ArrowUp/g, '↑')
+  display = display.replace(/ArrowDown/g, '↓')
+  display = display.replace(/Escape/g, 'Esc')
+  display = display.replace(/ /g, 'Space')
+  return display
 }
 </script>
 
 <template>
-  <div class="settings-page">
+  <div
+    class="settings-page"
+    @keydown="handleKeyDown"
+    @keyup="handleKeyUp"
+  >
     <header class="settings-header">
       <div class="header-left">
         <el-button circle :icon="Back" @click="goBack" />
@@ -207,6 +427,201 @@ function resetReadingConfig() {
                 :marks="{ 200: '200', 800: '800', 1400: '1400', 2000: '2000' }"
                 @change="(val) => configStore.updateReadingConfig({ pageChars: val })"
               />
+            </div>
+
+            <div class="setting-item">
+              <label>搜索高亮颜色</label>
+              <el-color-picker
+                v-model="configStore.readingConfig!.highlightColor"
+                @change="(val) => configStore.updateReadingConfig({ highlightColor: val })"
+                show-alpha
+              />
+            </div>
+          </div>
+        </el-tab-pane>
+
+        <el-tab-pane label="快捷键" name="shortcuts">
+          <template #label>
+            <el-icon><Key /></el-icon>
+            快捷键
+          </template>
+          <div class="settings-section">
+            <div class="section-header">
+              <h2>快捷键设置</h2>
+              <el-button size="small" :icon="RefreshRight" @click="resetShortcuts">
+                重置默认
+              </el-button>
+            </div>
+            <p class="section-desc">
+              点击快捷键进行修改，按下新的组合键完成设置。支持 Ctrl、Alt、Shift、Cmd 组合键。
+            </p>
+
+            <div class="shortcut-list">
+              <div
+                v-for="(info, action) in shortcutLabels"
+                :key="action"
+                class="shortcut-item"
+              >
+                <div class="shortcut-info">
+                  <div class="shortcut-name">{{ info.label }}</div>
+                  <div class="shortcut-desc">{{ info.description }}</div>
+                </div>
+                <div class="shortcut-value">
+                  <el-button
+                    v-if="editingShortcut !== action"
+                    class="shortcut-btn"
+                    @click="startEditShortcut(action as keyof ShortcutConfig)"
+                  >
+                    {{ displayShortcut(configStore.shortcuts?.[action as keyof ShortcutConfig] || '') }}
+                  </el-button>
+                  <el-button
+                    v-else
+                    class="shortcut-btn recording"
+                    type="primary"
+                    @click="cancelEditShortcut"
+                  >
+                    {{ recordingKey ? (tempShortcut || '按下按键...') : '保存' }}
+                  </el-button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </el-tab-pane>
+
+        <el-tab-pane label="窗口设置" name="window">
+          <template #label>
+            <el-icon><MonitorIcon /></el-icon>
+            窗口设置
+          </template>
+          <div class="settings-section">
+            <div class="section-header">
+              <h2>窗口行为</h2>
+            </div>
+
+            <div class="setting-item">
+              <label>
+                <el-icon><FullScreen /></el-icon>
+                记住窗口大小
+              </label>
+              <el-switch
+                v-model="windowSettings.rememberWindowSize"
+                @change="(val) => updateWindowSetting('rememberWindowSize', val)"
+              />
+            </div>
+
+            <div class="setting-item">
+              <label>
+                <el-icon><MonitorIcon /></el-icon>
+                记住窗口位置
+              </label>
+              <el-switch
+                v-model="windowSettings.rememberWindowPosition"
+                @change="(val) => updateWindowSetting('rememberWindowPosition', val)"
+              />
+            </div>
+
+            <div class="setting-item">
+              <label>
+                <el-icon><FullScreen /></el-icon>
+                启动时全屏
+              </label>
+              <el-switch
+                v-model="windowSettings.startFullscreen"
+                @change="(val) => updateWindowSetting('startFullscreen', val)"
+              />
+            </div>
+
+            <div class="setting-item">
+              <label>
+                <el-icon><Warning /></el-icon>
+                启动时最小化
+              </label>
+              <el-switch
+                v-model="windowSettings.startMinimized"
+                @change="(val) => updateWindowSetting('startMinimized', val)"
+              />
+            </div>
+
+            <div class="setting-item">
+              <label>
+                <el-icon><Top /></el-icon>
+                默认窗口置顶
+              </label>
+              <el-switch
+                v-model="configStore.appConfig!.isAlwaysOnTop"
+                @change="(val) => configStore.updateAppConfig({ isAlwaysOnTop: val })"
+              />
+            </div>
+          </div>
+        </el-tab-pane>
+
+        <el-tab-pane label="数据管理" name="data">
+          <template #label>
+            <el-icon><DataAnalysis /></el-icon>
+            数据管理
+          </template>
+          <div class="settings-section">
+            <div class="section-header">
+              <h2>书架数据</h2>
+            </div>
+            <p class="section-desc">
+              导出或导入您的书架数据，包括书籍信息、阅读进度、书签、分类等。
+            </p>
+
+            <div class="data-actions">
+              <div class="data-action-card">
+                <el-icon class="action-icon" :size="32"><Download /></el-icon>
+                <div class="action-info">
+                  <h3>导出全部数据</h3>
+                  <p>将所有书架数据导出为 JSON 文件</p>
+                </div>
+                <el-button type="primary" :icon="Download" @click="exportAllData">
+                  导出
+                </el-button>
+              </div>
+
+              <div class="data-action-card">
+                <el-icon class="action-icon" :size="32"><Upload /></el-icon>
+                <div class="action-info">
+                  <h3>导入数据</h3>
+                  <p>从 JSON 文件导入书架数据</p>
+                </div>
+                <el-button :icon="Upload" @click="importData">
+                  导入
+                </el-button>
+              </div>
+            </div>
+          </div>
+
+          <div class="settings-section">
+            <div class="section-header">
+              <h2>统计信息</h2>
+            </div>
+            <div class="stats-grid">
+              <div class="stat-item">
+                <div class="stat-value">{{ booksStore.books.length }}</div>
+                <div class="stat-label">书籍总数</div>
+              </div>
+              <div class="stat-item">
+                <div class="stat-value">{{ booksStore.categories.length }}</div>
+                <div class="stat-label">分类数量</div>
+              </div>
+              <div class="stat-item">
+                <div class="stat-value">{{ booksStore.books.reduce((sum, b) => sum + (b.totalReadingTime || 0), 0) > 3600 ? Math.floor(booksStore.books.reduce((sum, b) => sum + (b.totalReadingTime || 0), 0) / 3600) + 'h' : Math.floor(booksStore.books.reduce((sum, b) => sum + (b.totalReadingTime || 0), 0) / 60) + 'm' }}</div>
+                <div class="stat-label">总阅读时长</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="settings-section danger-section">
+            <div class="section-header">
+              <h2>危险操作</h2>
+            </div>
+            <div class="danger-actions">
+              <el-button type="danger" :icon="Delete" @click="clearAllData">
+                清空所有数据
+              </el-button>
+              <p class="danger-desc">此操作将删除所有书籍、书签、阅读进度和设置，且无法恢复。</p>
             </div>
           </div>
         </el-tab-pane>
@@ -343,7 +758,7 @@ function resetReadingConfig() {
             <h2 class="app-name">小说阅读器</h2>
             <p class="app-version">版本 1.0.0</p>
             <p class="app-desc">
-              一个简洁、高效的本地小说阅读器，支持 TXT、EPUB 等多种格式。
+              一个简洁、高效的本地小说阅读器，支持 TXT、EPUB、PDF、CHM 等多种格式。
             </p>
             <div class="tech-stack">
               <h3>技术栈</h3>
@@ -359,19 +774,33 @@ function resetReadingConfig() {
             <div class="features">
               <h3>功能特性</h3>
               <ul>
-                <li>📖 支持 TXT、EPUB 格式</li>
+                <li>📖 支持 TXT、EPUB、PDF、CHM 格式</li>
                 <li>🎨 三种主题（日间/夜间/护眼）</li>
                 <li>📑 智能分页，章节识别</li>
                 <li>🔖 书签功能</li>
                 <li>📊 阅读进度保存</li>
                 <li>📁 批量扫描导入</li>
                 <li>🏷️ 分类管理</li>
-                <li>⌨️ 快捷键支持</li>
+                <li>⌨️ 自定义快捷键</li>
+                <li>🔍 全文搜索，关键词高亮</li>
+                <li>📂 TXT分卷拆分</li>
+                <li>💾 数据导入导出</li>
+                <li>📈 阅读时长统计</li>
+                <li>📝 书籍备注</li>
+                <li>🪟 窗口置顶、全屏、记忆位置</li>
               </ul>
             </div>
           </div>
         </el-tab-pane>
       </el-tabs>
+    </div>
+
+    <div v-if="recordingKey" class="shortcut-overlay" @click="cancelEditShortcut">
+      <div class="shortcut-popup">
+        <h3>按下新的快捷键</h3>
+        <div class="current-keys">{{ tempShortcut || '按下按键...' }}</div>
+        <p class="hint">按 Esc 或点击外部取消</p>
+      </div>
     </div>
   </div>
 </template>
@@ -383,6 +812,7 @@ function resetReadingConfig() {
   display: flex;
   flex-direction: column;
   background: var(--bg-secondary);
+  position: relative;
 }
 
 .settings-header {
@@ -434,7 +864,7 @@ function resetReadingConfig() {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    margin-bottom: 24px;
+    margin-bottom: 16px;
 
     h2 {
       font-size: 16px;
@@ -443,11 +873,26 @@ function resetReadingConfig() {
       color: var(--text-primary);
     }
   }
+
+  .section-desc {
+    color: var(--text-secondary);
+    font-size: 13px;
+    margin-bottom: 24px;
+  }
+
+  &.danger-section {
+    border: 1px solid var(--error-color, #f56c6c);
+    
+    .section-header h2 {
+      color: var(--error-color, #f56c6c);
+    }
+  }
 }
 
 .setting-item {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   padding: 16px 0;
   border-bottom: 1px solid var(--border-color);
 
@@ -456,6 +901,9 @@ function resetReadingConfig() {
   }
 
   label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
     min-width: 160px;
     font-size: 14px;
     color: var(--text-primary);
@@ -554,6 +1002,163 @@ function resetReadingConfig() {
         text-overflow: ellipsis;
       }
     }
+  }
+}
+
+.shortcut-list {
+  .shortcut-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 16px 0;
+    border-bottom: 1px solid var(--border-color);
+
+    &:last-child {
+      border-bottom: none;
+    }
+
+    .shortcut-info {
+      .shortcut-name {
+        font-size: 14px;
+        font-weight: 500;
+        color: var(--text-primary);
+        margin-bottom: 4px;
+      }
+
+      .shortcut-desc {
+        font-size: 12px;
+        color: var(--text-tertiary);
+      }
+    }
+
+    .shortcut-value {
+      .shortcut-btn {
+        min-width: 180px;
+        text-align: center;
+        font-family: monospace;
+        font-size: 13px;
+
+        &.recording {
+          animation: pulse 1s infinite;
+        }
+      }
+    }
+  }
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
+.shortcut-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+
+  .shortcut-popup {
+    background: var(--bg-primary);
+    padding: 40px 60px;
+    border-radius: 16px;
+    text-align: center;
+
+    h3 {
+      font-size: 18px;
+      margin: 0 0 20px;
+      color: var(--text-primary);
+    }
+
+    .current-keys {
+      font-size: 24px;
+      font-family: monospace;
+      font-weight: 600;
+      color: var(--accent-color);
+      background: var(--bg-secondary);
+      padding: 16px 32px;
+      border-radius: 8px;
+      margin-bottom: 16px;
+    }
+
+    .hint {
+      font-size: 13px;
+      color: var(--text-tertiary);
+      margin: 0;
+    }
+  }
+}
+
+.data-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+
+  .data-action-card {
+    display: flex;
+    align-items: center;
+    gap: 20px;
+    padding: 20px;
+    background: var(--bg-secondary);
+    border-radius: 12px;
+
+    .action-icon {
+      color: var(--accent-color);
+    }
+
+    .action-info {
+      flex: 1;
+
+      h3 {
+        font-size: 15px;
+        font-weight: 600;
+        margin: 0 0 4px;
+        color: var(--text-primary);
+      }
+
+      p {
+        font-size: 13px;
+        color: var(--text-secondary);
+        margin: 0;
+      }
+    }
+  }
+}
+
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 16px;
+
+  .stat-item {
+    text-align: center;
+    padding: 24px;
+    background: var(--bg-secondary);
+    border-radius: 12px;
+
+    .stat-value {
+      font-size: 32px;
+      font-weight: 700;
+      color: var(--accent-color);
+      margin-bottom: 8px;
+    }
+
+    .stat-label {
+      font-size: 13px;
+      color: var(--text-secondary);
+    }
+  }
+}
+
+.danger-actions {
+  text-align: center;
+
+  .danger-desc {
+    margin-top: 12px;
+    font-size: 12px;
+    color: var(--text-tertiary);
   }
 }
 

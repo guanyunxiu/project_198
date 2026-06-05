@@ -1,11 +1,14 @@
-import { ipcMain, dialog, shell } from 'electron'
-import { existsSync, statSync } from 'fs'
+import { ipcMain, dialog, shell, app } from 'electron'
+import { existsSync, statSync, readFileSync, writeFileSync, mkdirSync } from 'fs'
+import { join, dirname, basename, extname } from 'path'
 import { bookDb, categoryDb, bookmarkDb, progressDb } from '../db'
 import {
   getConfig,
   getReadingConfig,
+  getShortcuts,
   updateConfig,
   updateReadingConfig,
+  updateShortcuts,
   addScanPath,
   removeScanPath,
   addFavoritePath,
@@ -20,20 +23,43 @@ import {
   detectEncoding,
   readTextFile
 } from '../utils/file'
-import { parseTxtFile, paginateContent, getPageContent } from '../utils/txtParser'
+import { parseTxtFile, paginateContent, getPageContent, extractChapters } from '../utils/txtParser'
 import { parseEpubFile, paginateEpubContent, getEpubPageContent } from '../utils/epubParser'
-import type { Book, Category, Bookmark, ReadingConfig, FileInfo, PageContent } from '../types'
+import {
+  toggleFullscreen,
+  toggleAlwaysOnTop,
+  isAlwaysOnTop,
+  isFullscreen,
+  setReadingStart,
+  saveReadingTime,
+  resetReadingTime
+} from '../window'
+import type {
+  Book,
+  Category,
+  Bookmark,
+  ReadingConfig,
+  FileInfo,
+  PageContent,
+  SearchResult,
+  SplitVolumeOption,
+  ExportBookData
+} from '../types'
 
 const bookCache = new Map<number, {
   content: string
   chapters: any[]
   totalPages: number
   pages: PageContent[]
+  isLargeFile: boolean
 }>()
+
+const LARGE_FILE_THRESHOLD = 50 * 1024 * 1024
 
 export function registerIpcHandlers(): void {
   ipcMain.handle('app:getConfig', () => getConfig())
   ipcMain.handle('app:getReadingConfig', () => getReadingConfig())
+  ipcMain.handle('app:getShortcuts', () => getShortcuts())
   ipcMain.handle('app:getSystemInfo', () => ({
     platform: process.platform,
     homedir: require('os').homedir(),
@@ -46,6 +72,10 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('app:updateReadingConfig', (_e, updates) => {
     updateReadingConfig(updates)
     return getReadingConfig()
+  })
+  ipcMain.handle('app:updateShortcuts', (_e, updates) => {
+    updateShortcuts(updates)
+    return getShortcuts()
   })
 
   ipcMain.handle('app:addScanPath', (_e, path) => {
@@ -65,6 +95,11 @@ export function registerIpcHandlers(): void {
     return getConfig()
   })
 
+  ipcMain.handle('window:toggleFullscreen', () => toggleFullscreen())
+  ipcMain.handle('window:toggleAlwaysOnTop', () => toggleAlwaysOnTop())
+  ipcMain.handle('window:isAlwaysOnTop', () => isAlwaysOnTop())
+  ipcMain.handle('window:isFullscreen', () => isFullscreen())
+
   ipcMain.handle('category:getAll', () => categoryDb.getAll())
   ipcMain.handle('category:create', (_e, name) => categoryDb.create(name))
   ipcMain.handle('category:update', (_e, id, name) => {
@@ -79,6 +114,10 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('book:getAll', () => bookDb.getAll())
   ipcMain.handle('book:getById', (_e, id) => bookDb.getById(id))
   ipcMain.handle('book:getByPath', (_e, path) => bookDb.getByPath(path))
+  ipcMain.handle('book:addReadingTime', (_e, bookId, duration) => {
+    bookDb.addReadingTime(bookId, duration)
+    return true
+  })
 
   ipcMain.handle('book:add', async (_e, filePath) => {
     if (!existsSync(filePath) || !isSupportedFile(filePath)) {
@@ -90,49 +129,7 @@ export function registerIpcHandlers(): void {
       return existing.id
     }
 
-    const fileType = getFileType(filePath)
-    const defaultCategory = categoryDb.getAll().find(c => c.name === '未分类')
-
-    let title = getFileNameWithoutExtension(filePath)
-    let author = '未知'
-    let encoding = 'utf-8'
-    let totalCharacters = 0
-    let coverPath: string | null = null
-
-    try {
-      if (fileType === 'txt') {
-        const result = parseTxtFile(filePath)
-        encoding = result.encoding
-        totalCharacters = result.totalCharacters
-      } else if (fileType === 'epub') {
-        const result = parseEpubFile(filePath)
-        title = result.title || title
-        author = result.author || author
-        coverPath = result.coverPath
-        totalCharacters = result.totalCharacters
-      }
-    } catch (err) {
-      console.error('Parse file error:', err)
-    }
-
-    const stats = statSync(filePath)
-    const bookId = bookDb.create({
-      title,
-      author,
-      filePath,
-      fileType,
-      coverPath,
-      encoding,
-      totalPages: 0,
-      totalCharacters,
-      categoryId: defaultCategory?.id || null,
-      isPinned: 0,
-      lastReadPage: 1,
-      lastReadPosition: 0,
-      lastReadTime: Date.now()
-    })
-
-    return bookId
+    return addBookInternal(filePath)
   })
 
   ipcMain.handle('book:update', (_e, id, updates) => {
@@ -154,6 +151,104 @@ export function registerIpcHandlers(): void {
   ipcMain.handle('book:updateProgress', (_e, bookId, page, position) => {
     bookDb.updateReadingProgress(bookId, page, position)
     return true
+  })
+
+  ipcMain.handle('book:batchImport', async (_e, filePaths) => {
+    const results: { success: number[]; failed: string[] } = { success: [], failed: [] }
+    
+    for (const filePath of filePaths) {
+      try {
+        const existing = bookDb.getByPath(filePath)
+        if (existing) {
+          results.success.push(existing.id)
+        } else {
+          const id = await addBookInternal(filePath)
+          if (id) results.success.push(id)
+          else results.failed.push(filePath)
+        }
+      } catch (err) {
+        results.failed.push(filePath)
+      }
+    }
+    
+    return results
+  })
+
+  ipcMain.handle('book:batchExport', async (_e, bookIds) => {
+    const exportData: ExportBookData[] = []
+    
+    for (const bookId of bookIds) {
+      const book = bookDb.getById(bookId)
+      if (!book) continue
+      
+      const bookmarks = bookmarkDb.getByBookId(bookId)
+      const progress = progressDb.getByBookId(bookId, 1000)
+      
+      const { id, createdAt, updatedAt, ...bookData } = book
+      const bookmarkData = bookmarks.map(({ id, createdAt, ...rest }) => rest)
+      const progressData = progress.map(({ id, createdAt, ...rest }) => rest)
+      
+      exportData.push({
+        book: bookData,
+        bookmarks: bookmarkData,
+        progress: progressData
+      })
+    }
+    
+    return exportData
+  })
+
+  ipcMain.handle('book:exportJson', async (_e, exportData) => {
+    const result = await dialog.showSaveDialog({
+      title: '导出书架数据',
+      defaultPath: `bookshelf_${Date.now()}.json`,
+      filters: [{ name: 'JSON文件', extensions: ['json'] }]
+    })
+    
+    if (!result.canceled && result.filePath) {
+      writeFileSync(result.filePath, JSON.stringify(exportData, null, 2), 'utf-8')
+      return true
+    }
+    return false
+  })
+
+  ipcMain.handle('book:importJson', async () => {
+    const result = await dialog.showOpenDialog({
+      title: '导入书架数据',
+      properties: ['openFile'],
+      filters: [{ name: 'JSON文件', extensions: ['json'] }]
+    })
+    
+    if (!result.canceled && result.filePaths.length > 0) {
+      try {
+        const data = JSON.parse(readFileSync(result.filePaths[0], 'utf-8')) as ExportBookData[]
+        const importedIds: number[] = []
+        
+        for (const item of data) {
+          const existing = bookDb.getByPath(item.book.filePath)
+          if (existing) {
+            importedIds.push(existing.id)
+            continue
+          }
+          
+          const bookId = bookDb.create(item.book)
+          importedIds.push(bookId)
+          
+          for (const bookmark of item.bookmarks) {
+            bookmarkDb.create({ ...bookmark, bookId })
+          }
+          
+          for (const progress of item.progress) {
+            progressDb.create({ ...progress, bookId })
+          }
+        }
+        
+        return { success: true, importedIds }
+      } catch (err) {
+        return { success: false, error: (err as Error).message }
+      }
+    }
+    return { success: false, error: '用户取消' }
   })
 
   ipcMain.handle('bookmark:getByBookId', (_e, bookId) => bookmarkDb.getByBookId(bookId))
@@ -198,6 +293,9 @@ export function registerIpcHandlers(): void {
         author = result.author || author
         coverPath = result.coverPath
         totalCharacters = result.totalCharacters
+      } else if (fileType === 'pdf' || fileType === 'chm') {
+        const stats = statSync(filePath)
+        totalCharacters = stats.size
       }
     } catch (err) {
       console.error('Parse file error:', err)
@@ -216,7 +314,9 @@ export function registerIpcHandlers(): void {
       isPinned: 0,
       lastReadPage: 1,
       lastReadPosition: 0,
-      lastReadTime: Date.now()
+      lastReadTime: Date.now(),
+      totalReadingTime: 0,
+      notes: ''
     })
 
     return bookId
@@ -292,17 +392,21 @@ export function registerIpcHandlers(): void {
     const book = bookDb.getById(bookId)
     if (!book) throw new Error('书籍不存在')
 
+    setReadingStart(bookId)
+
     const cached = bookCache.get(bookId)
     if (cached) {
       return {
-        content: cached.content,
+        content: cached.isLargeFile ? '' : cached.content,
         chapters: cached.chapters,
-        totalPages: cached.totalPages
+        totalPages: cached.totalPages,
+        isLargeFile: cached.isLargeFile
       }
     }
 
     let content = ''
     let chapters: any[] = []
+    const isLargeFile = book.totalCharacters > LARGE_FILE_THRESHOLD
 
     try {
       if (book.fileType === 'txt') {
@@ -313,13 +417,22 @@ export function registerIpcHandlers(): void {
         const result = parseEpubFile(book.filePath)
         content = result.content
         chapters = result.chapters
+      } else if (book.fileType === 'pdf' || book.fileType === 'chm') {
+        content = `这是一本${book.fileType.toUpperCase()}格式的电子书，当前仅支持简易阅读模式。\n\n书名：${book.title}\n作者：${book.author}\n\n由于格式限制，部分功能可能不可用。`
+        chapters = [{
+          index: 0,
+          title: '全文',
+          startPosition: 0,
+          endPosition: content.length,
+          startPage: 1
+        }]
       }
     } catch (err) {
       console.error('Open book error:', err)
       throw new Error('解析书籍失败')
     }
 
-    const pagination = book.fileType === 'epub'
+    const pagination = book.fileType === 'epub' || book.fileType === 'pdf' || book.fileType === 'chm'
       ? paginateEpubContent(content, chapters, pageChars)
       : paginateContent(content, chapters, pageChars)
 
@@ -327,7 +440,8 @@ export function registerIpcHandlers(): void {
       content,
       chapters,
       totalPages: pagination.totalPages,
-      pages: pagination.pages
+      pages: pagination.pages,
+      isLargeFile
     }
 
     bookCache.set(bookId, cacheData)
@@ -335,9 +449,10 @@ export function registerIpcHandlers(): void {
     bookDb.update(bookId, { totalPages: pagination.totalPages })
 
     return {
-      content,
+      content: isLargeFile ? '' : content,
       chapters,
-      totalPages: pagination.totalPages
+      totalPages: pagination.totalPages,
+      isLargeFile
     }
   })
 
@@ -358,15 +473,175 @@ export function registerIpcHandlers(): void {
     const cache = bookCache.get(bookId)
     if (!cache) throw new Error('书籍未加载')
 
+    if (cache.isLargeFile) {
+      return {
+        content: '',
+        chapters: cache.chapters,
+        isLargeFile: true
+      }
+    }
+
     return {
       content: cache.content,
-      chapters: cache.chapters
+      chapters: cache.chapters,
+      isLargeFile: false
     }
   })
 
+  ipcMain.handle('reader:getChapterContent', (_e, bookId, chapterIndex) => {
+    const book = bookDb.getById(bookId)
+    if (!book) throw new Error('书籍不存在')
+
+    const cache = bookCache.get(bookId)
+    if (!cache) throw new Error('书籍未加载')
+
+    const chapter = cache.chapters.find(c => c.index === chapterIndex)
+    if (!chapter) return null
+
+    const content = cache.content.slice(chapter.startPosition, chapter.endPosition)
+    return {
+      chapter,
+      content,
+      pages: cache.pages.filter(p => p.chapterIndex === chapterIndex)
+    }
+  })
+
+  ipcMain.handle('reader:search', (_e, bookId, keyword) => {
+    const book = bookDb.getById(bookId)
+    if (!book) throw new Error('书籍不存在')
+    if (!keyword || keyword.trim().length === 0) return []
+
+    const cache = bookCache.get(bookId)
+    if (!cache) throw new Error('书籍未加载')
+
+    const results: SearchResult[] = []
+    const searchKeyword = keyword.toLowerCase()
+    const contextLength = 50
+
+    let matchIndex = 0
+    for (const page of cache.pages) {
+      const contentLower = page.content.toLowerCase()
+      let pos = contentLower.indexOf(searchKeyword)
+      
+      while (pos !== -1) {
+        const actualPos = page.startPosition + pos
+        const startContext = Math.max(0, pos - contextLength)
+        const endContext = Math.min(page.content.length, pos + keyword.length + contextLength)
+        const context = page.content.slice(startContext, endContext)
+        
+        results.push({
+          page: page.page,
+          position: actualPos,
+          chapterTitle: page.chapterTitle,
+          content: context,
+          matchIndex: matchIndex++
+        })
+        
+        pos = contentLower.indexOf(searchKeyword, pos + 1)
+      }
+    }
+
+    return results
+  })
+
+  ipcMain.handle('reader:splitVolume', async (_e, bookId, options: SplitVolumeOption) => {
+    const book = bookDb.getById(bookId)
+    if (!book || book.fileType !== 'txt') {
+      throw new Error('仅支持TXT文件分卷')
+    }
+
+    const cache = bookCache.get(bookId)
+    if (!cache) throw new Error('书籍未加载')
+
+    const volumes: { title: string; content: string; startChapter: number; endChapter: number }[] = []
+    
+    if (options.unit === 'chapters') {
+      const chaptersPerVolume = options.volumeSize
+      for (let i = 0; i < cache.chapters.length; i += chaptersPerVolume) {
+        const volumeChapters = cache.chapters.slice(i, i + chaptersPerVolume)
+        const startChapter = volumeChapters[0].index
+        const endChapter = volumeChapters[volumeChapters.length - 1].index
+        const startPos = volumeChapters[0].startPosition
+        const endPos = volumeChapters[volumeChapters.length - 1].endPosition
+        
+        let volumeContent = ''
+        for (const chapter of volumeChapters) {
+          const chapterContent = cache.content.slice(chapter.startPosition, chapter.endPosition)
+          volumeContent += chapterContent + '\n\n'
+        }
+        
+        volumes.push({
+          title: `${book.title}_第${Math.floor(i / chaptersPerVolume) + 1}卷`,
+          content: volumeContent,
+          startChapter,
+          endChapter
+        })
+      }
+    } else {
+      const charsPerVolume = options.volumeSize * 10000
+      let currentPos = 0
+      let volumeIndex = 1
+      
+      while (currentPos < cache.content.length) {
+        let endPos = Math.min(currentPos + charsPerVolume, cache.content.length)
+        
+        if (endPos < cache.content.length) {
+          const breakPoints = [
+            cache.content.lastIndexOf('\n\n', endPos),
+            cache.content.lastIndexOf('\n', endPos),
+            cache.content.lastIndexOf('。', endPos)
+          ]
+          const validBreak = breakPoints.find(p => p > currentPos + charsPerVolume * 0.8)
+          if (validBreak !== undefined) {
+            endPos = validBreak + 1
+          }
+        }
+        
+        volumes.push({
+          title: `${book.title}_第${volumeIndex}卷`,
+          content: cache.content.slice(currentPos, endPos),
+          startChapter: 0,
+          endChapter: 0
+        })
+        
+        currentPos = endPos
+        volumeIndex++
+      }
+    }
+
+    const result = await dialog.showOpenDialog({
+      title: '选择保存目录',
+      properties: ['openDirectory']
+    })
+    
+    if (!result.canceled && result.filePaths.length > 0) {
+      const saveDir = result.filePaths[0]
+      for (let i = 0; i < volumes.length; i++) {
+        const volume = volumes[i]
+        const fileName = `${volume.title}.txt`
+        const filePath = join(saveDir, fileName)
+        writeFileSync(filePath, volume.content, book.encoding as BufferEncoding || 'utf-8')
+      }
+      return { success: true, count: volumes.length, saveDir }
+    }
+    
+    return { success: false, count: 0, saveDir: '' }
+  })
+
+  ipcMain.handle('reader:getChapters', (_e, bookId) => {
+    const cache = bookCache.get(bookId)
+    if (!cache) return []
+    return cache.chapters
+  })
+
   ipcMain.handle('reader:closeBook', (_e, bookId) => {
+    saveReadingTime()
     bookCache.delete(bookId)
     return true
+  })
+
+  ipcMain.handle('reader:generateToc', (_e, content) => {
+    return extractChapters(content)
   })
 
   ipcMain.handle('shell:openExternal', (_e, url) => {

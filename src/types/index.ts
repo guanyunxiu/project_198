@@ -13,6 +13,8 @@ export interface Book {
   lastReadPage: number
   lastReadPosition: number
   lastReadTime: number
+  totalReadingTime: number
+  notes: string
   createdAt: number
   updatedAt: number
 }
@@ -30,6 +32,16 @@ export interface Bookmark {
   position: number
   content: string
   chapterTitle: string
+  createdAt: number
+}
+
+export interface ReadingProgress {
+  id: number
+  bookId: number
+  page: number
+  position: number
+  chapterIndex: number
+  readTime: number
   createdAt: number
 }
 
@@ -58,6 +70,45 @@ export interface ReadingConfig {
   theme: 'light' | 'dark' | 'eye'
   readMode: 'scroll' | 'page'
   pageChars: number
+  highlightColor: string
+}
+
+export interface ShortcutConfig {
+  nextPage: string
+  prevPage: string
+  addBookmark: string
+  goBack: string
+  toggleFullscreen: string
+  toggleTheme: string
+  toggleAlwaysOnTop: string
+  search: string
+  toggleSidebar: string
+}
+
+export interface SearchResult {
+  page: number
+  position: number
+  chapterTitle: string
+  content: string
+  matchIndex: number
+}
+
+export interface SearchState {
+  keyword: string
+  results: SearchResult[]
+  currentIndex: number
+  isSearching: boolean
+}
+
+export interface SplitVolumeOption {
+  volumeSize: number
+  unit: 'chars' | 'chapters'
+}
+
+export interface ExportBookData {
+  book: Omit<Book, 'id' | 'createdAt' | 'updatedAt'>
+  bookmarks: Omit<Bookmark, 'id' | 'createdAt'>[]
+  progress: ReadingProgress[]
 }
 
 export interface AppConfig {
@@ -70,6 +121,12 @@ export interface AppConfig {
   windowX: number | null
   windowY: number | null
   isMaximized: boolean
+  isAlwaysOnTop: boolean
+  rememberWindowSize: boolean
+  rememberWindowPosition: boolean
+  startFullscreen: boolean
+  startMinimized: boolean
+  shortcuts: ShortcutConfig
   readingConfig: ReadingConfig
 }
 

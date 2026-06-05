@@ -18,9 +18,22 @@ import {
   FullScreen,
   Setting,
   Menu as MenuIcon,
-  Grid
+  Grid,
+  Search,
+  Close,
+  Scissor,
+  Upload,
+  Download,
+  Top,
+  Bottom,
+  Lock,
+  Unlock,
+  Edit,
+  Clock,
+  Files,
+  Loading
 } from '@element-plus/icons-vue'
-import type { Bookmark as BookmarkType } from '@/types'
+import type { Bookmark as BookmarkType, SearchResult } from '@/types'
 
 const route = useRoute()
 const router = useRouter()
@@ -28,11 +41,23 @@ const readerStore = useReaderStore()
 const configStore = useConfigStore()
 
 const showSettingsPanel = ref(false)
+const showToolsPanel = ref(false)
+const showSearchBar = ref(false)
 const showFullscreen = ref(false)
 const showChapterInput = ref(false)
+const showSplitDialog = ref(false)
 const gotoPageInput = ref('')
+const searchInput = ref('')
+const splitVolumeSize = ref(10)
+const splitVolumeUnit = ref<'chars' | 'chapters'>('chapters')
 
 const readingConfig = computed(() => configStore.readingConfig!)
+const shortcuts = computed(() => configStore.shortcuts!)
+const searchResults = computed(() => readerStore.searchState.results)
+const currentSearchIndex = computed(() => readerStore.searchState.currentIndex)
+const isSearching = computed(() => readerStore.searchState.isSearching)
+const searchKeyword = computed(() => readerStore.searchState.keyword)
+
 const contentStyle = computed(() => {
   if (!readingConfig.value) return {}
   return {
@@ -69,16 +94,53 @@ onUnmounted(() => {
 })
 
 function handleKeydown(e: KeyboardEvent) {
-  if (e.key === 'ArrowRight' || e.key === ' ') {
+  if (showSearchBar.value && e.key === 'Escape') {
+    hideSearchBar()
+    return
+  }
+
+  if (configStore.matchShortcut(e, 'nextPage')) {
     e.preventDefault()
     readerStore.nextPage()
-  } else if (e.key === 'ArrowLeft') {
+  } else if (configStore.matchShortcut(e, 'prevPage')) {
     e.preventDefault()
     readerStore.prevPage()
-  } else if (e.key === 'Escape') {
+  } else if (configStore.matchShortcut(e, 'goBack')) {
+    e.preventDefault()
     router.push('/')
-  } else if (e.key === 'b' || e.key === 'B') {
+  } else if (configStore.matchShortcut(e, 'addBookmark')) {
+    e.preventDefault()
     handleAddBookmark()
+  } else if (configStore.matchShortcut(e, 'toggleFullscreen')) {
+    e.preventDefault()
+    handleToggleFullscreen()
+  } else if (configStore.matchShortcut(e, 'toggleTheme')) {
+    e.preventDefault()
+    toggleTheme()
+  } else if (configStore.matchShortcut(e, 'toggleAlwaysOnTop')) {
+    e.preventDefault()
+    handleToggleAlwaysOnTop()
+  } else if (configStore.matchShortcut(e, 'search')) {
+    e.preventDefault()
+    showSearchBar.value = true
+    nextTick(() => {
+      document.getElementById('search-input')?.focus()
+    })
+  } else if (configStore.matchShortcut(e, 'toggleSidebar')) {
+    e.preventDefault()
+    readerStore.showSidebar = !readerStore.showSidebar
+  } else if (showSearchBar.value && e.key === 'Enter') {
+    e.preventDefault()
+    handleSearch()
+  } else if (searchResults.value.length > 0) {
+    if (e.key === 'F3' || (e.ctrlKey && e.key === 'g')) {
+      e.preventDefault()
+      if (e.shiftKey) {
+        readerStore.prevSearchResult()
+      } else {
+        readerStore.nextSearchResult()
+      }
+    }
   }
 }
 
@@ -140,7 +202,6 @@ async function handleDeleteBookmark(bookmark: BookmarkType) {
     await readerStore.deleteBookmark(bookmark.id)
     ElMessage.success('删除成功')
   } catch {
-    // User cancelled
   }
 }
 
@@ -185,10 +246,76 @@ function adjustPageMargin(delta: number) {
   configStore.updateReadingConfig({ pageMargin: newMargin })
 }
 
+async function handleToggleFullscreen() {
+  const isFullscreen = await configStore.toggleFullscreen()
+  ElMessage.info(isFullscreen ? '已进入全屏模式' : '已退出全屏模式')
+}
+
+async function handleToggleAlwaysOnTop() {
+  const isOnTop = await configStore.toggleAlwaysOnTop()
+  ElMessage.info(isOnTop ? '窗口已置顶' : '已取消窗口置顶')
+}
+
 function formatReadTime(timestamp: number): string {
   if (!timestamp) return '暂无阅读记录'
   const date = new Date(timestamp)
   return date.toLocaleString('zh-CN')
+}
+
+function formatTotalReadingTime(seconds: number): string {
+  if (!seconds) return '0分钟'
+  const hours = Math.floor(seconds / 3600)
+  const minutes = Math.floor((seconds % 3600) / 60)
+  if (hours > 0) {
+    return `${hours}小时${minutes}分钟`
+  }
+  return `${minutes}分钟`
+}
+
+function handleSearch() {
+  if (!searchInput.value.trim()) {
+    readerStore.resetSearch()
+    return
+  }
+  readerStore.search(searchInput.value.trim())
+}
+
+function hideSearchBar() {
+  showSearchBar.value = false
+  searchInput.value = ''
+  readerStore.resetSearch()
+}
+
+async function handleGotoSearchResult(result: SearchResult) {
+  await readerStore.goToSearchResult(result.matchIndex)
+}
+
+async function handleSplitVolume() {
+  if (!readerStore.book || readerStore.book.fileType !== 'txt') {
+    ElMessage.warning('仅支持TXT文件分卷')
+    return
+  }
+
+  try {
+    const result = await readerStore.splitVolume({
+      volumeSize: splitVolumeSize.value,
+      unit: splitVolumeUnit.value
+    })
+    
+    if (result?.success) {
+      ElMessage.success(`成功拆分为 ${result.count} 个文件，已保存到 ${result.saveDir}`)
+      showSplitDialog.value = false
+    } else {
+      ElMessage.warning('已取消分卷操作')
+    }
+  } catch (err) {
+    ElMessage.error('分卷失败')
+  }
+}
+
+function highlightContent(content: string): string {
+  if (!searchKeyword.value) return content
+  return readerStore.highlightKeyword(content, searchKeyword.value)
 }
 
 watch(
@@ -206,12 +333,44 @@ watch(
 <template>
   <div class="reader-page" v-loading="readerStore.isLoading">
     <div class="reader-container" :class="`theme-${readingConfig?.theme}`">
+      <div v-if="readerStore.isLargeFile" class="large-file-warning">
+        <el-icon><Files /></el-icon>
+        <span>这是一个大文件，已启用优化模式以提升性能</span>
+      </div>
+
+      <div v-if="showSearchBar" class="search-bar glass-effect">
+        <div class="search-input-wrapper">
+          <el-icon><Search /></el-icon>
+          <input
+            id="search-input"
+            v-model="searchInput"
+            type="text"
+            placeholder="搜索关键词..."
+            @keyup.enter="handleSearch"
+          />
+          <el-button v-if="isSearching" circle size="small" :icon="Loading" :loading="true" />
+          <el-button v-else circle size="small" :icon="Search" @click="handleSearch" />
+          <el-button circle size="small" :icon="Close" @click="hideSearchBar" />
+        </div>
+        <div v-if="searchResults.length > 0" class="search-navigation">
+          <el-button size="small" @click="readerStore.prevSearchResult()">上一个</el-button>
+          <span class="search-counter">{{ currentSearchIndex + 1 }} / {{ searchResults.length }}</span>
+          <el-button size="small" @click="readerStore.nextSearchResult()">下一个</el-button>
+        </div>
+      </div>
+
       <header class="reader-header glass-effect">
         <div class="header-left">
           <el-button circle :icon="Back" @click="goBack" />
           <div class="book-info">
             <h2 class="book-title">{{ readerStore.book?.title }}</h2>
-            <p class="chapter-title">{{ readerStore.currentChapter?.title }}</p>
+            <div class="book-meta">
+              <span class="chapter-title">{{ readerStore.currentChapter?.title }}</span>
+              <span class="reading-time">
+                <el-icon><Clock /></el-icon>
+                已阅读 {{ formatTotalReadingTime(readerStore.book?.totalReadingTime || 0) }}
+              </span>
+            </div>
           </div>
         </div>
 
@@ -233,8 +392,22 @@ watch(
         </div>
 
         <div class="header-right">
+          <el-button circle :icon="Search" @click="showSearchBar = true; nextTick(() => document.getElementById('search-input')?.focus())" />
+          <el-button circle :icon="MenuIcon" @click="showToolsPanel = !showToolsPanel" />
           <el-button circle :icon="List" @click="readerStore.showSidebar = !readerStore.showSidebar" />
           <el-button circle :icon="Star" @click="handleAddBookmark" />
+          <el-button
+            circle
+            :icon="configStore.isAlwaysOnTop ? Lock : Unlock"
+            @click="handleToggleAlwaysOnTop"
+            :class="{ active: configStore.isAlwaysOnTop }"
+          />
+          <el-button
+            circle
+            :icon="FullScreen"
+            @click="handleToggleFullscreen"
+            :class="{ active: configStore.isFullscreen }"
+          />
           <el-button circle :icon="readingConfig?.theme === 'dark' ? Sunny : MoonNight" @click="toggleTheme" />
           <el-button circle :icon="Setting" @click="showSettingsPanel = !showSettingsPanel" />
         </div>
@@ -251,7 +424,7 @@ watch(
           class="reader-scroll-mode"
         >
           <div class="reader-content" :style="contentStyle">
-            <template v-if="readerStore.fullContent">
+            <template v-if="readerStore.fullContent && !readerStore.isLargeFile">
               <template v-for="chapter in readerStore.fullContent.chapters" :key="chapter.index">
                 <h3 class="chapter-heading" :id="'chapter-' + chapter.index">
                   {{ chapter.title }}
@@ -260,8 +433,8 @@ watch(
                   v-for="(para, idx) in readerStore.fullContent.content.slice(chapter.startPosition, chapter.endPosition).split('\n')"
                   :key="idx"
                   class="paragraph"
+                  v-html="highlightContent(para)"
                 >
-                  {{ para }}
                 </p>
               </template>
             </template>
@@ -271,8 +444,8 @@ watch(
                 v-for="(para, idx) in readerStore.currentContent.content.split('\n')"
                 :key="idx"
                 class="paragraph"
+                v-html="highlightContent(para)"
               >
-                {{ para }}
               </p>
             </template>
           </div>
@@ -290,8 +463,8 @@ watch(
                 v-for="(para, idx) in readerStore.currentContent.content.split('\n')"
                 :key="idx"
                 class="paragraph"
+                v-html="highlightContent(para)"
               >
-                {{ para }}
               </p>
             </div>
           </div>
@@ -335,6 +508,9 @@ watch(
               <el-tab-pane label="书签" name="bookmarks">
                 <el-icon><Star /></el-icon>
               </el-tab-pane>
+              <el-tab-pane label="搜索结果" name="search">
+                <el-icon><Search /></el-icon>
+              </el-tab-pane>
             </el-tabs>
           </div>
 
@@ -350,14 +526,15 @@ watch(
                 @click="handleChapterClick(chapter.index)"
               >
                 <span class="chapter-name">{{ chapter.title }}</span>
+                <span class="chapter-page">第{{ chapter.startPage }}页</span>
               </div>
             </div>
 
-            <div v-else class="bookmark-list">
+            <div v-else-if="readerStore.sidebarTab === 'bookmarks'" class="bookmark-list">
               <div v-if="readerStore.bookmarks.length === 0" class="empty-bookmarks">
                 <div class="empty-icon">🔖</div>
                 <p>暂无书签</p>
-                <p class="hint">按 B 键快速添加书签</p>
+                <p class="hint">按 {{ shortcuts?.addBookmark }} 键快速添加书签</p>
               </div>
               <div
                 v-for="bookmark in readerStore.bookmarks"
@@ -380,6 +557,88 @@ watch(
                   @click.stop="handleDeleteBookmark(bookmark)"
                 />
               </div>
+            </div>
+
+            <div v-else class="search-results-list">
+              <div v-if="searchResults.length === 0" class="empty-bookmarks">
+                <div class="empty-icon">🔍</div>
+                <p>暂无搜索结果</p>
+                <p class="hint">在搜索框输入关键词开始搜索</p>
+              </div>
+              <div
+                v-for="result in searchResults"
+                :key="result.matchIndex"
+                class="search-result-item"
+                :class="{ active: currentSearchIndex === result.matchIndex }"
+                @click="handleGotoSearchResult(result)"
+              >
+                <div class="result-chapter">{{ result.chapterTitle }}</div>
+                <div class="result-content" v-html="highlightContent(result.content)"></div>
+                <div class="result-page">第 {{ result.page }} 页</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </el-drawer>
+
+      <el-drawer
+        v-model="showToolsPanel"
+        direction="rtl"
+        size="280px"
+        title="文本工具箱"
+      >
+        <div class="tools-panel">
+          <div class="tool-section">
+            <h4 class="section-title">搜索与导航</h4>
+            <div class="tool-item" @click="showSearchBar = true">
+              <el-icon><Search /></el-icon>
+              <span>全文搜索</span>
+              <span class="tool-shortcut">{{ shortcuts?.search }}</span>
+            </div>
+            <div class="tool-item" @click="readerStore.showSidebar = true; readerStore.sidebarTab = 'chapters'">
+              <el-icon><List /></el-icon>
+              <span>章节目录</span>
+            </div>
+            <div class="tool-item" @click="readerStore.goToPage(1)">
+              <el-icon><Top /></el-icon>
+              <span>跳转到开头</span>
+            </div>
+            <div class="tool-item" @click="readerStore.goToPage(readerStore.totalPages)">
+              <el-icon><Bottom /></el-icon>
+              <span>跳转到末尾</span>
+            </div>
+          </div>
+
+          <div class="tool-section">
+            <h4 class="section-title">阅读辅助</h4>
+            <div class="tool-item" @click="toggleReadMode">
+              <el-icon><Grid /></el-icon>
+              <span>{{ readingConfig?.readMode === 'scroll' ? '切换到翻页模式' : '切换到滚动模式' }}</span>
+            </div>
+            <div class="tool-item" @click="handleToggleFullscreen">
+              <el-icon><FullScreen /></el-icon>
+              <span>{{ configStore.isFullscreen ? '退出全屏' : '全屏阅读' }}</span>
+            </div>
+            <div class="tool-item" @click="handleToggleAlwaysOnTop">
+              <el-icon>{{ configStore.isAlwaysOnTop ? Lock : Unlock }}</el-icon>
+              <span>{{ configStore.isAlwaysOnTop ? '取消置顶' : '窗口置顶' }}</span>
+            </div>
+          </div>
+
+          <div v-if="readerStore.book?.fileType === 'txt'" class="tool-section">
+            <h4 class="section-title">TXT工具</h4>
+            <div class="tool-item" @click="showSplitDialog = true">
+              <el-icon><Scissor /></el-icon>
+              <span>分卷拆分</span>
+            </div>
+          </div>
+
+          <div class="tool-section">
+            <h4 class="section-title">快捷操作</h4>
+            <div class="tool-item" @click="handleAddBookmark">
+              <el-icon><Star /></el-icon>
+              <span>添加书签</span>
+              <span class="tool-shortcut">{{ shortcuts?.addBookmark }}</span>
             </div>
           </div>
         </div>
@@ -511,29 +770,104 @@ watch(
           </div>
 
           <div class="setting-group">
+            <h4 class="group-title">
+              搜索高亮颜色
+            </h4>
+            <div class="highlight-colors">
+              <div
+                v-for="color in ['#ffe066', '#ff8787', '#69db7c', '#74c0fc', '#da77f2']"
+                :key="color"
+                class="color-option"
+                :class="{ active: readingConfig?.highlightColor === color }"
+                :style="{ backgroundColor: color }"
+                @click="configStore.updateReadingConfig({ highlightColor: color })"
+              />
+            </div>
+          </div>
+
+          <div class="setting-group">
             <h4 class="group-title">快捷键</h4>
             <div class="shortcut-list">
               <div class="shortcut-item">
                 <span>翻到下一页</span>
-                <kbd>→</kbd>
-                <kbd>空格</kbd>
+                <kbd>{{ shortcuts?.nextPage }}</kbd>
               </div>
               <div class="shortcut-item">
                 <span>翻到上一页</span>
-                <kbd>←</kbd>
+                <kbd>{{ shortcuts?.prevPage }}</kbd>
               </div>
               <div class="shortcut-item">
                 <span>添加书签</span>
-                <kbd>B</kbd>
+                <kbd>{{ shortcuts?.addBookmark }}</kbd>
+              </div>
+              <div class="shortcut-item">
+                <span>全文搜索</span>
+                <kbd>{{ shortcuts?.search }}</kbd>
+              </div>
+              <div class="shortcut-item">
+                <span>切换主题</span>
+                <kbd>{{ shortcuts?.toggleTheme }}</kbd>
+              </div>
+              <div class="shortcut-item">
+                <span>切换置顶</span>
+                <kbd>{{ shortcuts?.toggleAlwaysOnTop }}</kbd>
+              </div>
+              <div class="shortcut-item">
+                <span>全屏</span>
+                <kbd>{{ shortcuts?.toggleFullscreen }}</kbd>
+              </div>
+              <div class="shortcut-item">
+                <span>显示侧边栏</span>
+                <kbd>{{ shortcuts?.toggleSidebar }}</kbd>
               </div>
               <div class="shortcut-item">
                 <span>返回书架</span>
-                <kbd>Esc</kbd>
+                <kbd>{{ shortcuts?.goBack }}</kbd>
               </div>
             </div>
+            <p class="shortcut-hint">在设置页面可自定义快捷键</p>
           </div>
         </div>
       </el-drawer>
+
+      <el-dialog
+        v-model="showSplitDialog"
+        title="TXT分卷拆分"
+        width="400px"
+      >
+        <div class="split-dialog">
+          <p class="split-tip">将大文件拆分为多个小文件，方便在其他设备上阅读</p>
+          
+          <div class="form-item">
+            <label>拆分方式</label>
+            <el-radio-group v-model="splitVolumeUnit">
+              <el-radio value="chapters">按章节拆分</el-radio>
+              <el-radio value="chars">按字数拆分</el-radio>
+            </el-radio-group>
+          </div>
+
+          <div class="form-item">
+            <label>{{ splitVolumeUnit === 'chapters' ? '每卷章节数' : '每卷字数（万字）' }}</label>
+            <el-input-number
+              v-model="splitVolumeSize"
+              :min="1"
+              :max="splitVolumeUnit === 'chapters' ? 100 : 1000"
+              :step="splitVolumeUnit === 'chapters' ? 1 : 5"
+            />
+          </div>
+
+          <p class="split-info">
+            预计拆分为约 {{ splitVolumeUnit === 'chapters' 
+              ? Math.ceil(readerStore.chapters.length / splitVolumeSize)
+              : Math.ceil((readerStore.book?.totalCharacters || 0) / (splitVolumeSize * 10000))
+            }} 个文件
+          </p>
+        </div>
+        <template #footer>
+          <el-button @click="showSplitDialog = false">取消</el-button>
+          <el-button type="primary" @click="handleSplitVolume">开始拆分</el-button>
+        </template>
+      </el-dialog>
     </div>
   </div>
 </template>
@@ -551,6 +885,75 @@ watch(
   display: flex;
   flex-direction: column;
   transition: all 0.3s ease;
+  position: relative;
+}
+
+.large-file-warning {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  background: #fff3cd;
+  color: #856404;
+  padding: 8px 16px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  z-index: 1000;
+  border-bottom: 1px solid #ffeeba;
+}
+
+.search-bar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  padding: 12px 20px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  z-index: 200;
+  border-bottom: 1px solid var(--border-color);
+  backdrop-filter: blur(10px);
+  background: rgba(var(--bg-primary-rgb), 0.95);
+
+  .search-input-wrapper {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: var(--bg-secondary);
+    padding: 8px 12px;
+    border-radius: 20px;
+
+    el-icon {
+      color: var(--text-tertiary);
+    }
+
+    input {
+      flex: 1;
+      border: none;
+      outline: none;
+      background: transparent;
+      font-size: 14px;
+      color: var(--text-primary);
+    }
+  }
+
+  .search-navigation {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+
+    .search-counter {
+      font-size: 13px;
+      color: var(--text-secondary);
+      min-width: 60px;
+      text-align: center;
+    }
+  }
 }
 
 .reader-header {
@@ -575,10 +978,24 @@ watch(
         color: var(--text-primary);
       }
 
-      .chapter-title {
-        font-size: 12px;
-        color: var(--text-secondary);
-        margin: 2px 0 0;
+      .book-meta {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        margin-top: 2px;
+
+        .chapter-title {
+          font-size: 12px;
+          color: var(--text-secondary);
+        }
+
+        .reading-time {
+          font-size: 12px;
+          color: var(--text-tertiary);
+          display: flex;
+          align-items: center;
+          gap: 4px;
+        }
       }
     }
   }
@@ -629,6 +1046,11 @@ watch(
   .header-right {
     display: flex;
     gap: 8px;
+
+    .el-button.active {
+      background: var(--accent-color);
+      color: white;
+    }
   }
 }
 
@@ -695,6 +1117,13 @@ watch(
     text-align: justify;
     line-height: inherit;
   }
+
+  :deep(.search-highlight) {
+    background: v-bind('readingConfig?.highlightColor || "#ffe066"');
+    padding: 0 2px;
+    border-radius: 2px;
+    font-weight: 500;
+  }
 }
 
 .page-content {
@@ -740,6 +1169,9 @@ watch(
 
   .chapter-list {
     .chapter-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
       padding: 12px 20px;
       cursor: pointer;
       border-bottom: 1px solid var(--border-color);
@@ -760,6 +1192,13 @@ watch(
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
+        flex: 1;
+      }
+
+      .chapter-page {
+        font-size: 11px;
+        opacity: 0.7;
+        margin-left: 8px;
       }
     }
   }
@@ -822,6 +1261,108 @@ watch(
           font-size: 11px;
           color: var(--text-tertiary);
         }
+      }
+    }
+  }
+
+  .search-results-list {
+    .search-result-item {
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--border-color);
+      cursor: pointer;
+      transition: all 0.2s;
+
+      &:hover {
+        background: var(--bg-secondary);
+      }
+
+      &.active {
+        background: var(--accent-color);
+        color: white;
+
+        .result-chapter,
+        .result-page {
+          color: rgba(255, 255, 255, 0.8);
+        }
+
+        :deep(.search-highlight) {
+          background: rgba(255, 255, 255, 0.3);
+        }
+      }
+
+      .result-chapter {
+        font-size: 13px;
+        font-weight: 500;
+        color: var(--text-primary);
+        margin-bottom: 4px;
+      }
+
+      .result-content {
+        font-size: 12px;
+        color: var(--text-secondary);
+        line-height: 1.5;
+        margin-bottom: 4px;
+
+        :deep(.search-highlight) {
+          background: var(--accent-color);
+          color: white;
+          padding: 0 2px;
+          border-radius: 2px;
+        }
+      }
+
+      .result-page {
+        font-size: 11px;
+        color: var(--text-tertiary);
+      }
+    }
+  }
+}
+
+.tools-panel {
+  padding: 8px 0;
+
+  .tool-section {
+    margin-bottom: 24px;
+
+    .section-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-secondary);
+      padding: 0 16px;
+      margin-bottom: 8px;
+    }
+
+    .tool-item {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 12px 16px;
+      cursor: pointer;
+      transition: all 0.2s;
+      color: var(--text-primary);
+
+      &:hover {
+        background: var(--bg-secondary);
+        color: var(--accent-color);
+      }
+
+      el-icon {
+        font-size: 18px;
+      }
+
+      span {
+        flex: 1;
+        font-size: 14px;
+      }
+
+      .tool-shortcut {
+        font-size: 11px;
+        color: var(--text-tertiary);
+        background: var(--bg-secondary);
+        padding: 2px 6px;
+        border-radius: 4px;
+        flex: none;
       }
     }
   }
@@ -909,10 +1450,33 @@ watch(
     }
   }
 
+  .highlight-colors {
+    display: flex;
+    gap: 12px;
+
+    .color-option {
+      width: 32px;
+      height: 32px;
+      border-radius: 50%;
+      cursor: pointer;
+      border: 3px solid transparent;
+      transition: all 0.2s;
+
+      &:hover {
+        transform: scale(1.1);
+      }
+
+      &.active {
+        border-color: var(--accent-color);
+      }
+    }
+  }
+
   .shortcut-list {
     .shortcut-item {
       display: flex;
       align-items: center;
+      justify-content: space-between;
       gap: 8px;
       padding: 8px 0;
       font-size: 13px;
@@ -933,6 +1497,42 @@ watch(
         color: var(--text-primary);
       }
     }
+  }
+
+  .shortcut-hint {
+    font-size: 11px;
+    color: var(--text-tertiary);
+    margin-top: 8px;
+    text-align: center;
+  }
+}
+
+.split-dialog {
+  .split-tip {
+    font-size: 13px;
+    color: var(--text-secondary);
+    margin-bottom: 16px;
+  }
+
+  .form-item {
+    margin-bottom: 16px;
+
+    label {
+      display: block;
+      font-size: 13px;
+      color: var(--text-primary);
+      margin-bottom: 8px;
+      font-weight: 500;
+    }
+  }
+
+  .split-info {
+    font-size: 13px;
+    color: var(--accent-color);
+    margin-top: 8px;
+    padding: 8px 12px;
+    background: var(--bg-secondary);
+    border-radius: 4px;
   }
 }
 </style>

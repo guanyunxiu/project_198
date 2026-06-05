@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import type { Book, BookCache, Chapter, PageContent, Bookmark } from '@/types'
+import type { Book, BookCache, Chapter, PageContent, Bookmark, SearchResult, SearchState } from '@/types'
 
 export const useReaderStore = defineStore('reader', () => {
   const book = ref<Book | null>(null)
@@ -9,11 +9,19 @@ export const useReaderStore = defineStore('reader', () => {
   const currentPosition = ref(0)
   const currentChapter = ref<Chapter | null>(null)
   const currentContent = ref<PageContent | null>(null)
-  const fullContent = ref<{ content: string; chapters: Chapter[] } | null>(null)
+  const fullContent = ref<{ content: string; chapters: Chapter[]; isLargeFile?: boolean } | null>(null)
   const bookmarks = ref<Bookmark[]>([])
   const isLoading = ref(false)
   const showSidebar = ref(false)
-  const sidebarTab = ref<'chapters' | 'bookmarks'>('chapters')
+  const sidebarTab = ref<'chapters' | 'bookmarks' | 'search'>('chapters')
+  const isLargeFile = ref(false)
+  
+  const searchState = ref<SearchState>({
+    keyword: '',
+    results: [],
+    currentIndex: -1,
+    isSearching: false
+  })
 
   const totalPages = computed(() => cache.value?.totalPages || 0)
   const chapters = computed(() => cache.value?.chapters || [])
@@ -21,6 +29,7 @@ export const useReaderStore = defineStore('reader', () => {
     if (totalPages.value === 0) return 0
     return Math.round((currentPage.value / totalPages.value) * 100)
   })
+  const searchResultsCount = computed(() => searchState.value.results.length)
 
   async function openBook(bookId: number, pageChars: number = 800) {
     try {
@@ -30,6 +39,8 @@ export const useReaderStore = defineStore('reader', () => {
       currentChapter.value = null
       currentContent.value = null
       fullContent.value = null
+      isLargeFile.value = false
+      resetSearch()
 
       const bookData = await window.electronAPI.book.getById(bookId)
       if (!bookData) throw new Error('书籍不存在')
@@ -37,7 +48,8 @@ export const useReaderStore = defineStore('reader', () => {
       book.value = bookData
 
       const cacheData = await window.electronAPI.reader.openBook(bookId, pageChars)
-      cache.value = cacheData
+      cache.value = cacheData as BookCache
+      isLargeFile.value = cacheData.isLargeFile || false
 
       if (bookData.lastReadPage > 0 && bookData.lastReadPage <= cacheData.totalPages) {
         currentPage.value = bookData.lastReadPage
@@ -128,6 +140,66 @@ export const useReaderStore = defineStore('reader', () => {
     }
   }
 
+  async function search(keyword: string) {
+    if (!book.value || !keyword.trim()) {
+      resetSearch()
+      return
+    }
+
+    try {
+      searchState.value.isSearching = true
+      searchState.value.keyword = keyword
+      searchState.value.results = await window.electronAPI.reader.search(book.value.id, keyword)
+      searchState.value.currentIndex = searchState.value.results.length > 0 ? 0 : -1
+    } finally {
+      searchState.value.isSearching = false
+    }
+  }
+
+  function resetSearch() {
+    searchState.value = {
+      keyword: '',
+      results: [],
+      currentIndex: -1,
+      isSearching: false
+    }
+  }
+
+  async function goToSearchResult(index: number) {
+    if (index < 0 || index >= searchState.value.results.length) return
+    
+    const result = searchState.value.results[index]
+    searchState.value.currentIndex = index
+    await goToPage(result.page)
+  }
+
+  async function nextSearchResult() {
+    if (searchState.value.results.length === 0) return
+    
+    const nextIndex = (searchState.value.currentIndex + 1) % searchState.value.results.length
+    await goToSearchResult(nextIndex)
+  }
+
+  async function prevSearchResult() {
+    if (searchState.value.results.length === 0) return
+    
+    const prevIndex = searchState.value.currentIndex <= 0 
+      ? searchState.value.results.length - 1 
+      : searchState.value.currentIndex - 1
+    await goToSearchResult(prevIndex)
+  }
+
+  async function splitVolume(options: { volumeSize: number; unit: 'chars' | 'chapters' }) {
+    if (!book.value) return null
+    return await window.electronAPI.reader.splitVolume(book.value.id, options)
+  }
+
+  function highlightKeyword(content: string, keyword: string): string {
+    if (!keyword.trim()) return content
+    const regex = new RegExp(`(${keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi')
+    return content.replace(regex, '<mark class="search-highlight">$1</mark>')
+  }
+
   function closeBook() {
     if (book.value) {
       window.electronAPI.reader.closeBook(book.value.id)
@@ -138,7 +210,10 @@ export const useReaderStore = defineStore('reader', () => {
     currentPosition.value = 0
     currentChapter.value = null
     currentContent.value = null
+    fullContent.value = null
     bookmarks.value = []
+    isLargeFile.value = false
+    resetSearch()
   }
 
   function toggleSidebar() {
@@ -157,9 +232,12 @@ export const useReaderStore = defineStore('reader', () => {
     isLoading,
     showSidebar,
     sidebarTab,
+    isLargeFile,
+    searchState,
     totalPages,
     chapters,
     progress,
+    searchResultsCount,
     openBook,
     loadFullContent,
     loadPage,
@@ -170,6 +248,13 @@ export const useReaderStore = defineStore('reader', () => {
     loadBookmarks,
     addBookmark,
     deleteBookmark,
+    search,
+    resetSearch,
+    goToSearchResult,
+    nextSearchResult,
+    prevSearchResult,
+    splitVolume,
+    highlightKeyword,
     closeBook,
     toggleSidebar
   }

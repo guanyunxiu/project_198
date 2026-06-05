@@ -1,7 +1,19 @@
 import { app } from 'electron'
 import { join } from 'path'
 import { existsSync, writeFileSync, readFileSync } from 'fs'
-import type { AppConfig, ReadingConfig } from '../types'
+import type { AppConfig, ReadingConfig, ShortcutConfig } from '../types'
+
+const defaultShortcuts: ShortcutConfig = {
+  nextPage: 'ArrowRight',
+  prevPage: 'ArrowLeft',
+  addBookmark: 'b',
+  goBack: 'Escape',
+  toggleFullscreen: 'F11',
+  toggleTheme: 't',
+  toggleAlwaysOnTop: 'p',
+  search: 'Ctrl+f',
+  toggleSidebar: 's'
+}
 
 const defaultReadingConfig: ReadingConfig = {
   fontSize: 18,
@@ -10,7 +22,8 @@ const defaultReadingConfig: ReadingConfig = {
   pageMargin: 40,
   theme: 'light',
   readMode: 'scroll',
-  pageChars: 800
+  pageChars: 800,
+  highlightColor: '#ffe066'
 }
 
 const defaultConfig: AppConfig = {
@@ -23,6 +36,12 @@ const defaultConfig: AppConfig = {
   windowX: null,
   windowY: null,
   isMaximized: false,
+  isAlwaysOnTop: false,
+  rememberWindowSize: true,
+  rememberWindowPosition: true,
+  startFullscreen: false,
+  startMinimized: false,
+  shortcuts: defaultShortcuts,
   readingConfig: defaultReadingConfig
 }
 
@@ -39,6 +58,7 @@ export function initConfig(): void {
       currentConfig = {
         ...defaultConfig,
         ...saved,
+        shortcuts: { ...defaultShortcuts, ...saved.shortcuts },
         readingConfig: { ...defaultReadingConfig, ...saved.readingConfig }
       }
     } catch {
@@ -70,6 +90,15 @@ export function updateConfig(updates: Partial<AppConfig>): void {
 export function updateReadingConfig(updates: Partial<ReadingConfig>): void {
   currentConfig.readingConfig = { ...currentConfig.readingConfig, ...updates }
   saveConfig()
+}
+
+export function updateShortcuts(updates: Partial<ShortcutConfig>): void {
+  currentConfig.shortcuts = { ...currentConfig.shortcuts, ...updates }
+  saveConfig()
+}
+
+export function getShortcuts(): ShortcutConfig {
+  return { ...currentConfig.shortcuts }
 }
 
 export function addScanPath(path: string): void {
