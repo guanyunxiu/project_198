@@ -25,15 +25,10 @@ const files = ref<FileInfo[]>([])
 const selectedFiles = ref<Set<string>>(new Set())
 const isLoading = ref(false)
 const showHidden = ref(false)
+const systemInfo = ref<{ homedir: string } | null>(null)
 
 const homeDir = computed(() => {
-  const platform = navigator.platform.toLowerCase()
-  if (platform.includes('mac')) {
-    return '/Users/' + (process.env.USER || '')
-  } else if (platform.includes('win')) {
-    return 'C:/Users/' + (process.env.USERNAME || '')
-  }
-  return process.env.HOME || '/'
+  return systemInfo.value?.homedir || '/'
 })
 
 const displayFiles = computed(() => {
@@ -46,6 +41,7 @@ const selectedCount = computed(() => selectedFiles.value.size)
 const supportedExtensions = ['txt', 'epub', 'pdf', 'chm']
 
 onMounted(async () => {
+  systemInfo.value = await window.electronAPI.app.getSystemInfo()
   currentPath.value = homeDir.value
   await loadDirectory(currentPath.value)
 })

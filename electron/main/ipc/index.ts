@@ -24,11 +24,21 @@ import { parseTxtFile, paginateContent, getPageContent } from '../utils/txtParse
 import { parseEpubFile, paginateEpubContent, getEpubPageContent } from '../utils/epubParser'
 import type { Book, Category, Bookmark, ReadingConfig, FileInfo, PageContent } from '../types'
 
-const bookCache = new Map<number, { content: string; chapters: any[]; totalPages: number }>()
+const bookCache = new Map<number, {
+  content: string
+  chapters: any[]
+  totalPages: number
+  pages: PageContent[]
+}>()
 
 export function registerIpcHandlers(): void {
   ipcMain.handle('app:getConfig', () => getConfig())
   ipcMain.handle('app:getReadingConfig', () => getReadingConfig())
+  ipcMain.handle('app:getSystemInfo', () => ({
+    platform: process.platform,
+    homedir: require('os').homedir(),
+    user: process.env.USER || process.env.USERNAME || ''
+  }))
   ipcMain.handle('app:updateConfig', (_e, updates) => {
     updateConfig(updates)
     return getConfig()
@@ -282,8 +292,13 @@ export function registerIpcHandlers(): void {
     const book = bookDb.getById(bookId)
     if (!book) throw new Error('书籍不存在')
 
-    if (bookCache.has(bookId)) {
-      return bookCache.get(bookId)
+    const cached = bookCache.get(bookId)
+    if (cached) {
+      return {
+        content: cached.content,
+        chapters: cached.chapters,
+        totalPages: cached.totalPages
+      }
     }
 
     let content = ''
@@ -311,28 +326,42 @@ export function registerIpcHandlers(): void {
     const cacheData = {
       content,
       chapters,
-      totalPages: pagination.totalPages
+      totalPages: pagination.totalPages,
+      pages: pagination.pages
     }
 
     bookCache.set(bookId, cacheData)
 
     bookDb.update(bookId, { totalPages: pagination.totalPages })
 
-    return cacheData
+    return {
+      content,
+      chapters,
+      totalPages: pagination.totalPages
+    }
   })
 
-  ipcMain.handle('reader:getPage', (_e, bookId, page, pageChars = 800) => {
+  ipcMain.handle('reader:getPage', (_e, bookId, page) => {
     const book = bookDb.getById(bookId)
     if (!book) throw new Error('书籍不存在')
 
     const cache = bookCache.get(bookId)
     if (!cache) throw new Error('书籍未加载')
 
-    const pageContent = book.fileType === 'epub'
-      ? getEpubPageContent(cache.content, cache.chapters, page, pageChars)
-      : getPageContent(cache.content, cache.chapters, page, pageChars)
+    return cache.pages.find(p => p.page === page) || null
+  })
 
-    return pageContent
+  ipcMain.handle('reader:getFullContent', (_e, bookId) => {
+    const book = bookDb.getById(bookId)
+    if (!book) throw new Error('书籍不存在')
+
+    const cache = bookCache.get(bookId)
+    if (!cache) throw new Error('书籍未加载')
+
+    return {
+      content: cache.content,
+      chapters: cache.chapters
+    }
   })
 
   ipcMain.handle('reader:closeBook', (_e, bookId) => {

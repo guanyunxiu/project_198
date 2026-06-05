@@ -51,6 +51,7 @@ onMounted(async () => {
       await readerStore.openBook(bookId, pageChars)
       document.addEventListener('keydown', handleKeydown)
     } catch (err) {
+      console.error('Open book error:', err)
       ElMessage.error('打开书籍失败')
       router.push('/')
     }
@@ -70,10 +71,10 @@ onUnmounted(() => {
 function handleKeydown(e: KeyboardEvent) {
   if (e.key === 'ArrowRight' || e.key === ' ') {
     e.preventDefault()
-    readerStore.nextPage(readingConfig.value?.pageChars || 800)
+    readerStore.nextPage()
   } else if (e.key === 'ArrowLeft') {
     e.preventDefault()
-    readerStore.prevPage(readingConfig.value?.pageChars || 800)
+    readerStore.prevPage()
   } else if (e.key === 'Escape') {
     router.push('/')
   } else if (e.key === 'b' || e.key === 'B') {
@@ -90,9 +91,9 @@ function handleWheel(e: WheelEvent) {
   if (Math.abs(e.deltaY) > 30) {
     wheelLock = true
     if (e.deltaY > 0) {
-      readerStore.nextPage(readingConfig.value?.pageChars || 800)
+      readerStore.nextPage()
     } else {
-      readerStore.prevPage(readingConfig.value?.pageChars || 800)
+      readerStore.prevPage()
     }
     setTimeout(() => {
       wheelLock = false
@@ -101,17 +102,17 @@ function handleWheel(e: WheelEvent) {
 }
 
 async function handlePrevPage() {
-  await readerStore.prevPage(readingConfig.value?.pageChars || 800)
+  await readerStore.prevPage()
 }
 
 async function handleNextPage() {
-  await readerStore.nextPage(readingConfig.value?.pageChars || 800)
+  await readerStore.nextPage()
 }
 
 async function handleGotoPage() {
   const page = parseInt(gotoPageInput.value)
   if (page >= 1 && page <= readerStore.totalPages) {
-    await readerStore.goToPage(page, readingConfig.value?.pageChars || 800)
+    await readerStore.goToPage(page)
     showChapterInput.value = false
   } else {
     ElMessage.error(`请输入1-${readerStore.totalPages}之间的页码`)
@@ -119,7 +120,7 @@ async function handleGotoPage() {
 }
 
 async function handleChapterClick(chapterIndex: number) {
-  await readerStore.goToChapter(chapterIndex, readingConfig.value?.pageChars || 800)
+  await readerStore.goToChapter(chapterIndex)
   readerStore.showSidebar = false
 }
 
@@ -144,7 +145,7 @@ async function handleDeleteBookmark(bookmark: BookmarkType) {
 }
 
 async function handleGotoBookmark(bookmark: BookmarkType) {
-  await readerStore.goToPage(bookmark.page, readingConfig.value?.pageChars || 800)
+  await readerStore.goToPage(bookmark.page)
   readerStore.showSidebar = false
 }
 
@@ -195,7 +196,8 @@ watch(
   async (newVal, oldVal) => {
     if (newVal !== oldVal && readerStore.book && newVal) {
       const currentPage = readerStore.currentPage
-      await readerStore.loadPage(currentPage, newVal)
+      readerStore.closeBook()
+      await readerStore.openBook(readerStore.book.id, newVal)
     }
   }
 )
@@ -249,7 +251,21 @@ watch(
           class="reader-scroll-mode"
         >
           <div class="reader-content" :style="contentStyle">
-            <div v-if="readerStore.currentContent">
+            <template v-if="readerStore.fullContent">
+              <template v-for="chapter in readerStore.fullContent.chapters" :key="chapter.index">
+                <h3 class="chapter-heading" :id="'chapter-' + chapter.index">
+                  {{ chapter.title }}
+                </h3>
+                <p
+                  v-for="(para, idx) in readerStore.fullContent.content.slice(chapter.startPosition, chapter.endPosition).split('\n')"
+                  :key="idx"
+                  class="paragraph"
+                >
+                  {{ para }}
+                </p>
+              </template>
+            </template>
+            <template v-else-if="readerStore.currentContent">
               <h3 class="chapter-heading">{{ readerStore.currentContent.chapterTitle }}</h3>
               <p
                 v-for="(para, idx) in readerStore.currentContent.content.split('\n')"
@@ -258,7 +274,7 @@ watch(
               >
                 {{ para }}
               </p>
-            </div>
+            </template>
           </div>
         </div>
 

@@ -14,6 +14,11 @@ export interface IElectronAPI {
   app: {
     getConfig: () => Promise<AppConfig>
     getReadingConfig: () => Promise<ReadingConfig>
+    getSystemInfo: () => Promise<{
+      platform: string
+      homedir: string
+      user: string
+    }>
     updateConfig: (updates: Partial<AppConfig>) => Promise<AppConfig>
     updateReadingConfig: (updates: Partial<ReadingConfig>) => Promise<ReadingConfig>
     addScanPath: (path: string) => Promise<AppConfig>
@@ -66,7 +71,11 @@ export interface IElectronAPI {
       chapters: any[]
       totalPages: number
     }>
-    getPage: (bookId: number, page: number, pageChars?: number) => Promise<PageContent | null>
+    getPage: (bookId: number, page: number) => Promise<PageContent | null>
+    getFullContent: (bookId: number) => Promise<{
+      content: string
+      chapters: any[]
+    }>
     closeBook: (bookId: number) => Promise<boolean>
   }
 
@@ -80,6 +89,7 @@ const electronAPI: IElectronAPI = {
   app: {
     getConfig: () => ipcRenderer.invoke('app:getConfig'),
     getReadingConfig: () => ipcRenderer.invoke('app:getReadingConfig'),
+    getSystemInfo: () => ipcRenderer.invoke('app:getSystemInfo'),
     updateConfig: (updates) => ipcRenderer.invoke('app:updateConfig', updates),
     updateReadingConfig: (updates) => ipcRenderer.invoke('app:updateReadingConfig', updates),
     addScanPath: (path) => ipcRenderer.invoke('app:addScanPath', path),
@@ -131,8 +141,10 @@ const electronAPI: IElectronAPI = {
   reader: {
     openBook: (bookId, pageChars = 800) =>
       ipcRenderer.invoke('reader:openBook', bookId, pageChars),
-    getPage: (bookId, page, pageChars = 800) =>
-      ipcRenderer.invoke('reader:getPage', bookId, page, pageChars),
+    getPage: (bookId, page) =>
+      ipcRenderer.invoke('reader:getPage', bookId, page),
+    getFullContent: (bookId) =>
+      ipcRenderer.invoke('reader:getFullContent', bookId),
     closeBook: (bookId) => ipcRenderer.invoke('reader:closeBook', bookId)
   },
 

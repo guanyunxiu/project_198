@@ -9,6 +9,7 @@ export const useReaderStore = defineStore('reader', () => {
   const currentPosition = ref(0)
   const currentChapter = ref<Chapter | null>(null)
   const currentContent = ref<PageContent | null>(null)
+  const fullContent = ref<{ content: string; chapters: Chapter[] } | null>(null)
   const bookmarks = ref<Bookmark[]>([])
   const isLoading = ref(false)
   const showSidebar = ref(false)
@@ -28,6 +29,7 @@ export const useReaderStore = defineStore('reader', () => {
       currentPosition.value = 0
       currentChapter.value = null
       currentContent.value = null
+      fullContent.value = null
 
       const bookData = await window.electronAPI.book.getById(bookId)
       if (!bookData) throw new Error('书籍不存在')
@@ -42,16 +44,25 @@ export const useReaderStore = defineStore('reader', () => {
       }
 
       await loadBookmarks(bookId)
-      await loadPage(currentPage.value, pageChars)
+      await loadFullContent(bookId)
+      await loadPage(currentPage.value)
     } finally {
       isLoading.value = false
     }
   }
 
-  async function loadPage(page: number, pageChars: number = 800) {
+  async function loadFullContent(bookId: number) {
+    try {
+      fullContent.value = await window.electronAPI.reader.getFullContent(bookId)
+    } catch (err) {
+      console.error('Load full content error:', err)
+    }
+  }
+
+  async function loadPage(page: number) {
     if (!book.value) return
 
-    const content = await window.electronAPI.reader.getPage(book.value.id, page, pageChars)
+    const content = await window.electronAPI.reader.getPage(book.value.id, page)
     if (content) {
       currentContent.value = content
       currentPage.value = page
@@ -66,28 +77,28 @@ export const useReaderStore = defineStore('reader', () => {
     }
   }
 
-  async function nextPage(pageChars: number = 800) {
+  async function nextPage() {
     if (currentPage.value < totalPages.value) {
-      await loadPage(currentPage.value + 1, pageChars)
+      await loadPage(currentPage.value + 1)
     }
   }
 
-  async function prevPage(pageChars: number = 800) {
+  async function prevPage() {
     if (currentPage.value > 1) {
-      await loadPage(currentPage.value - 1, pageChars)
+      await loadPage(currentPage.value - 1)
     }
   }
 
-  async function goToPage(page: number, pageChars: number = 800) {
+  async function goToPage(page: number) {
     if (page >= 1 && page <= totalPages.value) {
-      await loadPage(page, pageChars)
+      await loadPage(page)
     }
   }
 
-  async function goToChapter(chapterIndex: number, pageChars: number = 800) {
+  async function goToChapter(chapterIndex: number) {
     const chapter = chapters.value.find(c => c.index === chapterIndex)
     if (chapter && chapter.startPage > 0) {
-      await loadPage(chapter.startPage, pageChars)
+      await loadPage(chapter.startPage)
     }
   }
 
@@ -141,6 +152,7 @@ export const useReaderStore = defineStore('reader', () => {
     currentPosition,
     currentChapter,
     currentContent,
+    fullContent,
     bookmarks,
     isLoading,
     showSidebar,
@@ -149,6 +161,7 @@ export const useReaderStore = defineStore('reader', () => {
     chapters,
     progress,
     openBook,
+    loadFullContent,
     loadPage,
     nextPage,
     prevPage,

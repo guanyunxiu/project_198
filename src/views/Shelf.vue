@@ -61,6 +61,7 @@ async function handleAddFiles() {
     const bookIds = await window.electronAPI.file.openDialog()
     if (bookIds.length > 0) {
       ElMessage.success(`成功添加 ${bookIds.length} 本书籍`)
+      await booksStore.loadBooks()
     }
   } catch (err) {
     ElMessage.error('添加书籍失败')
@@ -76,6 +77,7 @@ async function handleScanFolder() {
     const bookIds = await window.electronAPI.file.scanBooks([folderPath])
     ElMessage.success(`扫描完成，找到 ${bookIds.length} 本书籍`)
     await configStore.addScanPath(folderPath)
+    await booksStore.loadBooks()
   } finally {
     isScanning.value = false
   }
