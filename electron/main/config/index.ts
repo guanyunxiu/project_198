@@ -23,7 +23,13 @@ const defaultReadingConfig: ReadingConfig = {
   theme: 'light',
   readMode: 'scroll',
   pageChars: 800,
-  highlightColor: '#ffe066'
+  highlightColor: '#ffe066',
+  backgroundOpacity: 100,
+  fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',
+  pageLayout: 'single',
+  orientation: 'portrait',
+  autoTurnSpeed: 30,
+  autoTurnEnabled: false
 }
 
 const defaultConfig: AppConfig = {
@@ -42,7 +48,14 @@ const defaultConfig: AppConfig = {
   startFullscreen: false,
   startMinimized: false,
   shortcuts: defaultShortcuts,
-  readingConfig: defaultReadingConfig
+  readingConfig: defaultReadingConfig,
+  customThemes: [],
+  customFonts: [],
+  dailyReadingGoal: 30,
+  weeklyReadingGoal: 180,
+  enableSmartChapterDetection: true,
+  enableAutoCleanText: true,
+  enableGarbledFix: true
 }
 
 let configPath: string
@@ -59,7 +72,9 @@ export function initConfig(): void {
         ...defaultConfig,
         ...saved,
         shortcuts: { ...defaultShortcuts, ...saved.shortcuts },
-        readingConfig: { ...defaultReadingConfig, ...saved.readingConfig }
+        readingConfig: { ...defaultReadingConfig, ...saved.readingConfig },
+        customThemes: saved.customThemes || [],
+        customFonts: saved.customFonts || []
       }
     } catch {
       currentConfig = { ...defaultConfig }

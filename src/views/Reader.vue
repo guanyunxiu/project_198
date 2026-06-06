@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, computed, watch, nextTick } from 'vue'
+import { ref, onMounted, onUnmounted, computed, watch, nextTick, onBeforeUnmount } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useReaderStore } from '@/stores/reader'
 import { useConfigStore } from '@/stores/config'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage, ElMessageBox, ElSlider } from 'element-plus'
 import {
   ArrowLeft,
   ArrowRight,
@@ -31,9 +31,21 @@ import {
   Edit,
   Clock,
   Files,
-  Loading
+  Loading,
+  VideoPlay,
+  VideoPause,
+  DataLine,
+  Picture,
+  Brush,
+  Refresh,
+  Tickets,
+  Switch,
+  Histogram,
+  MagicStick,
+  Select,
+  Reading
 } from '@element-plus/icons-vue'
-import type { Bookmark as BookmarkType, SearchResult } from '@/types'
+import type { Bookmark as BookmarkType, SearchResult, ThemeConfig } from '@/types'
 
 const route = useRoute()
 const router = useRouter()
@@ -46,10 +58,21 @@ const showSearchBar = ref(false)
 const showFullscreen = ref(false)
 const showChapterInput = ref(false)
 const showSplitDialog = ref(false)
+const showPercentJump = ref(false)
 const gotoPageInput = ref('')
+const gotoPercentInput = ref('')
 const searchInput = ref('')
 const splitVolumeSize = ref(10)
 const splitVolumeUnit = ref<'chars' | 'chapters'>('chapters')
+const presetThemes = ref<ThemeConfig[]>([])
+const dailyAverage = ref(0)
+const pagesPerMinute = ref(0)
+const readingSpeedChars = ref(0)
+const showAutoTurnPanel = ref(false)
+const sessionStartTime = ref(0)
+const autoTurnSpeedLocal = ref(30)
+const showStatsPanel = ref(false)
+const isCleaningText = ref(false)
 
 const readingConfig = computed(() => configStore.readingConfig!)
 const shortcuts = computed(() => configStore.shortcuts!)
@@ -58,14 +81,60 @@ const currentSearchIndex = computed(() => readerStore.searchState.currentIndex)
 const isSearching = computed(() => readerStore.searchState.isSearching)
 const searchKeyword = computed(() => readerStore.searchState.keyword)
 
+const readerContainerClass = computed(() => {
+  const classes: string[] = []
+  if (readingConfig.value) {
+    classes.push(`theme-${readingConfig.value.theme}`)
+    classes.push(`reader-${readingConfig.value.pageLayout}-page`)
+    classes.push(`reader-${readingConfig.value.orientation}`)
+    if (readingConfig.value.customBackground) {
+      classes.push('reader-custom-bg')
+    }
+  }
+  return classes.join(' ')
+})
+
 const contentStyle = computed(() => {
   if (!readingConfig.value) return {}
-  return {
+  const style: Record<string, string> = {
     fontSize: readingConfig.value.fontSize + 'px',
     lineHeight: readingConfig.value.lineHeight,
     letterSpacing: readingConfig.value.letterSpacing + 'px',
-    padding: readingConfig.value.pageMargin + 'px'
+    padding: readingConfig.value.pageMargin + 'px',
+    fontFamily: readingConfig.value.fontFamily
   }
+  return style
+})
+
+const sessionReadingTime = computed(() => {
+  if (sessionStartTime.value === 0) return '0分钟'
+  const seconds = Math.floor((Date.now() - sessionStartTime.value) / 1000)
+  const hours = Math.floor(seconds / 3600)
+  const minutes = Math.floor((seconds % 3600) / 60)
+  if (hours > 0) {
+    return `${hours}小时${minutes}分钟`
+  }
+  return `${minutes}分钟`
+})
+
+const todayReadingTime = computed(() => {
+  const today = new Date().toISOString().split('T')[0]
+  const todayStats = readerStore.readingStats.filter(s => s.date === today)
+  const totalSeconds = todayStats.reduce((sum, s) => sum + s.readingTime, 0)
+  const hours = Math.floor(totalSeconds / 3600)
+  const minutes = Math.floor((totalSeconds % 3600) / 60)
+  if (hours > 0) {
+    return `${hours}小时${minutes}分钟`
+  }
+  return `${minutes}分钟`
+})
+
+const readingGoalProgress = computed(() => {
+  const goal = configStore.appConfig?.dailyReadingGoal || 30
+  const today = new Date().toISOString().split('T')[0]
+  const todayStats = readerStore.readingStats.filter(s => s.date === today)
+  const totalMinutes = todayStats.reduce((sum, s) => sum + Math.floor(s.readingTime / 60), 0)
+  return Math.min(100, Math.round((totalMinutes / goal) * 100))
 })
 
 onMounted(async () => {
@@ -74,6 +143,17 @@ onMounted(async () => {
     try {
       const pageChars = readingConfig.value?.pageChars || 800
       await readerStore.openBook(bookId, pageChars)
+      await readerStore.loadSmartInfo()
+      await readerStore.loadReadingStats()
+      sessionStartTime.value = Date.now()
+      
+      presetThemes.value = await window.electronAPI.theme.getPresetThemes()
+      dailyAverage.value = await window.electronAPI.stats.getDailyAverage(7)
+      pagesPerMinute.value = await window.electronAPI.stats.getPagesPerMinute(bookId)
+      
+      applyCustomBackground()
+      applyCustomFont()
+      
       document.addEventListener('keydown', handleKeydown)
     } catch (err) {
       console.error('Open book error:', err)
@@ -87,10 +167,37 @@ onMounted(async () => {
   })
 })
 
+function applyCustomBackground() {
+  if (readingConfig.value?.customBackground) {
+    document.documentElement.style.setProperty(
+      '--reader-bg-image',
+      `url('file://${readingConfig.value.customBackground}')`
+    )
+    document.documentElement.style.setProperty(
+      '--reader-bg-opacity',
+      (readingConfig.value.backgroundOpacity / 100).toString()
+    )
+  }
+}
+
+function applyCustomFont() {
+  if (readingConfig.value?.customFont) {
+    const fontFace = new FontFace(
+      'CustomReaderFont',
+      `url('file://${readingConfig.value.customFont}')`
+    )
+    fontFace.load().then(() => {
+      document.fonts.add(fontFace)
+    })
+  }
+}
+
 onUnmounted(() => {
   document.removeEventListener('keydown', handleKeydown)
   window.removeEventListener('wheel', handleWheel)
   readerStore.closeBook()
+  document.documentElement.style.removeProperty('--reader-bg-image')
+  document.documentElement.style.removeProperty('--reader-bg-opacity')
 })
 
 function handleKeydown(e: KeyboardEvent) {
@@ -129,6 +236,15 @@ function handleKeydown(e: KeyboardEvent) {
   } else if (configStore.matchShortcut(e, 'toggleSidebar')) {
     e.preventDefault()
     readerStore.showSidebar = !readerStore.showSidebar
+  } else if (e.key === 'a' && e.ctrlKey) {
+    e.preventDefault()
+    handleToggleAutoTurn()
+  } else if (e.key === '=' && e.ctrlKey) {
+    e.preventDefault()
+    adjustAutoTurnSpeed(5)
+  } else if (e.key === '-' && e.ctrlKey) {
+    e.preventDefault()
+    adjustAutoTurnSpeed(-5)
   } else if (showSearchBar.value && e.key === 'Enter') {
     e.preventDefault()
     handleSearch()
@@ -142,6 +258,161 @@ function handleKeydown(e: KeyboardEvent) {
       }
     }
   }
+}
+
+async function handleGotoPercent() {
+  const percent = parseFloat(gotoPercentInput.value)
+  if (percent >= 0 && percent <= 100) {
+    await readerStore.goToPercent(percent)
+    showPercentJump.value = false
+    ElMessage.success(`已跳转到 ${percent}%`)
+  } else {
+    ElMessage.error('请输入0-100之间的百分比')
+  }
+}
+
+function handleProgressClick(e: MouseEvent) {
+  const progressBar = e.currentTarget as HTMLElement
+  const rect = progressBar.getBoundingClientRect()
+  const percent = ((e.clientX - rect.left) / rect.width) * 100
+  readerStore.goToPercent(percent)
+}
+
+function handleProgressDrag(e: MouseEvent) {
+  readerStore.isDraggingProgress = true
+  const progressBar = e.currentTarget as HTMLElement
+  
+  function handleMove(moveEvent: MouseEvent) {
+    if (!readerStore.isDraggingProgress) return
+    const rect = progressBar.getBoundingClientRect()
+    const percent = Math.max(0, Math.min(100, ((moveEvent.clientX - rect.left) / rect.width) * 100))
+    readerStore.goToPercent(percent)
+  }
+  
+  function handleUp() {
+    readerStore.isDraggingProgress = false
+    document.removeEventListener('mousemove', handleMove)
+    document.removeEventListener('mouseup', handleUp)
+  }
+  
+  document.addEventListener('mousemove', handleMove)
+  document.addEventListener('mouseup', handleUp)
+}
+
+async function handleToggleAutoTurn() {
+  await readerStore.toggleAutoTurn()
+  if (readerStore.autoTurnEnabled) {
+    ElMessage.success(`自动翻页已开启，每页 ${readerStore.autoTurnSpeed} 秒`)
+  } else {
+    ElMessage.info('自动翻页已关闭')
+  }
+}
+
+function adjustAutoTurnSpeed(delta: number) {
+  const newSpeed = Math.max(5, Math.min(120, readerStore.autoTurnSpeed + delta))
+  readerStore.setAutoTurnSpeed(newSpeed)
+  autoTurnSpeedLocal.value = newSpeed
+  ElMessage.info(`自动翻页速度已调整为 ${newSpeed} 秒`)
+}
+
+async function handleUploadBackground() {
+  const path = await window.electronAPI.file.uploadBackground()
+  if (path) {
+    configStore.updateReadingConfig({ customBackground: path })
+    applyCustomBackground()
+    ElMessage.success('背景图片已设置')
+  }
+}
+
+async function handleUploadFont() {
+  const result = await window.electronAPI.file.uploadFont()
+  if (result) {
+    configStore.updateReadingConfig({ 
+      customFont: result.path,
+      fontFamily: `'${result.name}', ${readingConfig.value.fontFamily}`
+    })
+    applyCustomFont()
+    ElMessage.success(`字体 "${result.name}" 已导入`)
+  }
+}
+
+function handleClearBackground() {
+  configStore.updateReadingConfig({ customBackground: undefined })
+  document.documentElement.style.removeProperty('--reader-bg-image')
+  document.documentElement.style.removeProperty('--reader-bg-opacity')
+  ElMessage.info('已清除自定义背景')
+}
+
+function handleAdjustOpacity(val: number) {
+  configStore.updateReadingConfig({ backgroundOpacity: val })
+  document.documentElement.style.setProperty('--reader-bg-opacity', (val / 100).toString())
+}
+
+function handlePageLayoutChange(layout: 'single' | 'double') {
+  configStore.updateReadingConfig({ pageLayout: layout })
+  if (layout === 'double') {
+    readerStore.loadNextPageForDouble()
+  }
+  ElMessage.success(layout === 'double' ? '已切换到双页模式' : '已切换到单页模式')
+}
+
+function handleOrientationChange(orientation: 'portrait' | 'landscape') {
+  configStore.updateReadingConfig({ orientation })
+  ElMessage.success(orientation === 'landscape' ? '已切换到横屏模式' : '已切换到竖屏模式')
+}
+
+function handleThemeChange(themeName: string) {
+  configStore.updateReadingConfig({ theme: themeName })
+}
+
+async function handleCleanText() {
+  try {
+    isCleaningText.value = true
+    const result = await readerStore.cleanText({
+      removeEmptyLines: true,
+      fixGarbled: true,
+      removeDuplicates: true
+    })
+    
+    if (result) {
+      ElMessage.success(
+        `文本清理完成：移除 ${result.emptyLinesRemoved} 个空行，` +
+        `修复 ${result.garbledFixed} 处乱码，` +
+        `${result.duplicateChapters.length} 个重复章节`
+      )
+    }
+  } catch (err) {
+    ElMessage.error('文本清理失败')
+  } finally {
+    isCleaningText.value = false
+  }
+}
+
+async function handleReparseChapters() {
+  try {
+    await readerStore.reparseChapters()
+    ElMessage.success(`已重新识别章节，共 ${readerStore.chapters.length} 章`)
+  } catch (err) {
+    ElMessage.error('重新识别章节失败')
+  }
+}
+
+async function handleDailyCheckIn() {
+  const result = await readerStore.checkInDaily()
+  if (result.success) {
+    ElMessage.success(`打卡成功！已连续打卡 ${result.streak} 天`)
+  } else {
+    ElMessage.info('今天已经打过卡了')
+  }
+}
+
+function formatMinutes(seconds: number): string {
+  const minutes = Math.floor(seconds / 60)
+  const hours = Math.floor(minutes / 60)
+  if (hours > 0) {
+    return `${hours}小时${minutes % 60}分钟`
+  }
+  return `${minutes}分钟`
 }
 
 let wheelLock = false
@@ -332,7 +603,7 @@ watch(
 
 <template>
   <div class="reader-page" v-loading="readerStore.isLoading">
-    <div class="reader-container" :class="`theme-${readingConfig?.theme}`">
+    <div class="reader-container" :class="[`theme-${readingConfig?.theme}`, readerContainerClass]">
       <div v-if="readerStore.isLargeFile" class="large-file-warning">
         <el-icon><Files /></el-icon>
         <span>这是一个大文件，已启用优化模式以提升性能</span>
@@ -398,6 +669,34 @@ watch(
           <el-button circle :icon="Star" @click="handleAddBookmark" />
           <el-button
             circle
+            :icon="readerStore.autoTurnEnabled ? VideoPause : VideoPlay"
+            @click="handleToggleAutoTurn"
+            :class="{ active: readerStore.autoTurnEnabled }"
+            title="自动翻页 (Ctrl+A)"
+          />
+          <el-button
+            circle
+            :icon="DataLine"
+            @click="showStatsPanel = !showStatsPanel"
+            :class="{ active: showStatsPanel }"
+            title="阅读统计"
+          />
+          <el-button
+            circle
+            :icon="readingConfig?.pageLayout === 'double' ? Tickets : Files"
+            @click="handlePageLayoutChange(readingConfig?.pageLayout === 'double' ? 'single' : 'double')"
+            :class="{ active: readingConfig?.pageLayout === 'double' }"
+            title="切换单/双页"
+          />
+          <el-button
+            circle
+            :icon="Switch"
+            @click="handleOrientationChange(readingConfig?.orientation === 'portrait' ? 'landscape' : 'portrait')"
+            :class="{ active: readingConfig?.orientation === 'landscape' }"
+            title="切换横/竖屏"
+          />
+          <el-button
+            circle
             :icon="configStore.isAlwaysOnTop ? Lock : Unlock"
             @click="handleToggleAlwaysOnTop"
             :class="{ active: configStore.isAlwaysOnTop }"
@@ -413,9 +712,27 @@ watch(
         </div>
       </header>
 
-      <div class="progress-bar">
-        <div class="progress-fill" :style="{ width: readerStore.progress + '%' }" />
-        <span class="progress-text">{{ readerStore.progress }}%</span>
+      <div 
+        class="progress-bar progress-bar-draggable"
+        @click="handleProgressClick"
+        @mousedown="handleProgressDrag"
+      >
+        <div class="progress-fill" :style="{ width: readerStore.progress + '%' }">
+          <div class="progress-handle" />
+        </div>
+        <span 
+          class="progress-text"
+          @click.stop="showPercentJump = !showPercentJump"
+        >{{ readerStore.progress }}%</span>
+        <div v-if="showPercentJump" class="goto-percent-popover">
+          <el-input
+            v-model="gotoPercentInput"
+            placeholder="输入百分比"
+            suffix="%"
+            @keyup.enter="handleGotoPercent"
+          />
+          <el-button type="primary" @click="handleGotoPercent">跳转</el-button>
+        </div>
       </div>
 
       <main class="reader-content-area">
@@ -454,6 +771,7 @@ watch(
         <div
           v-else
           class="reader-page-mode"
+          :class="{ 'reader-double-page': readingConfig?.pageLayout === 'double' }"
           @click.self="handleNextPage"
         >
           <div class="reader-content page-content" :style="contentStyle">
@@ -461,6 +779,23 @@ watch(
               <h3 class="chapter-heading">{{ readerStore.currentContent.chapterTitle }}</h3>
               <p
                 v-for="(para, idx) in readerStore.currentContent.content.split('\n')"
+                :key="idx"
+                class="paragraph"
+                v-html="highlightContent(para)"
+              >
+              </p>
+            </div>
+          </div>
+          
+          <div 
+            v-if="readingConfig?.pageLayout === 'double' && readerStore.nextPageContent"
+            class="reader-content page-content" 
+            :style="contentStyle"
+          >
+            <div>
+              <h3 class="chapter-heading">{{ readerStore.nextPageContent.chapterTitle }}</h3>
+              <p
+                v-for="(para, idx) in readerStore.nextPageContent.content.split('\n')"
                 :key="idx"
                 class="paragraph"
                 v-html="highlightContent(para)"
@@ -493,6 +828,54 @@ watch(
         </el-button>
       </div>
 
+      <div v-if="readerStore.autoTurnEnabled" class="auto-turn-indicator glass-effect">
+        <div class="auto-turn-status">
+          <el-icon :size="16" class="running"><VideoPlay /></el-icon>
+          <span>自动翻页中</span>
+        </div>
+        <div class="auto-turn-speed">{{ readerStore.autoTurnSpeed }}秒/页</div>
+      </div>
+
+      <div v-if="showStatsPanel" class="stats-floating-panel glass-effect">
+        <div class="stats-header">
+          <span class="stats-title">阅读统计</span>
+          <el-button text @click="showStatsPanel = false"><Close /></el-button>
+        </div>
+        <div class="stats-grid">
+          <div class="stat-item">
+            <div class="stat-value">{{ sessionReadingTime }}</div>
+            <div class="stat-label">本次阅读</div>
+          </div>
+          <div class="stat-item">
+            <div class="stat-value">{{ todayReadingTime }}</div>
+            <div class="stat-label">今日阅读</div>
+          </div>
+          <div class="stat-item">
+            <div class="stat-value">{{ dailyAverage }}页</div>
+            <div class="stat-label">日均阅读</div>
+          </div>
+          <div class="stat-item">
+            <div class="stat-value">{{ pagesPerMinute.toFixed(1) }}</div>
+            <div class="stat-label">页/分钟</div>
+          </div>
+          <div class="stat-item full-width">
+            <div class="goal-progress">
+              <div class="goal-label">今日目标</div>
+              <el-progress 
+                :percentage="readingGoalProgress" 
+                :stroke-width="8"
+                color="#67c23a"
+              />
+            </div>
+          </div>
+          <div class="stat-item full-width">
+            <el-button type="primary" @click="handleDailyCheckIn" style="width: 100%">
+              <Star /> 每日打卡
+            </el-button>
+          </div>
+        </div>
+      </div>
+
       <el-drawer
         v-model="readerStore.showSidebar"
         direction="ltr"
@@ -510,6 +893,12 @@ watch(
               </el-tab-pane>
               <el-tab-pane label="搜索结果" name="search">
                 <el-icon><Search /></el-icon>
+              </el-tab-pane>
+              <el-tab-pane label="阅读统计" name="stats">
+                <el-icon><DataLine /></el-icon>
+              </el-tab-pane>
+              <el-tab-pane label="书籍信息" name="info">
+                <el-icon><MagicStick /></el-icon>
               </el-tab-pane>
             </el-tabs>
           </div>
@@ -559,7 +948,7 @@ watch(
               </div>
             </div>
 
-            <div v-else class="search-results-list">
+            <div v-else-if="readerStore.sidebarTab === 'search'" class="search-results-list">
               <div v-if="searchResults.length === 0" class="empty-bookmarks">
                 <div class="empty-icon">🔍</div>
                 <p>暂无搜索结果</p>
@@ -575,6 +964,100 @@ watch(
                 <div class="result-chapter">{{ result.chapterTitle }}</div>
                 <div class="result-content" v-html="highlightContent(result.content)"></div>
                 <div class="result-page">第 {{ result.page }} 页</div>
+              </div>
+            </div>
+
+            <div v-else-if="readerStore.sidebarTab === 'stats'" class="stats-panel">
+              <div class="stats-card">
+                <div class="stats-card-header">
+                  <el-icon><DataLine /></el-icon>
+                  <span>阅读统计</span>
+                </div>
+                <div class="stats-grid-2">
+                  <div class="stat-card">
+                    <div class="stat-number">{{ sessionReadingTime }}</div>
+                    <div class="stat-desc">本次阅读</div>
+                  </div>
+                  <div class="stat-card">
+                    <div class="stat-number">{{ todayReadingTime }}</div>
+                    <div class="stat-desc">今日阅读</div>
+                  </div>
+                  <div class="stat-card">
+                    <div class="stat-number">{{ dailyAverage }}页</div>
+                    <div class="stat-desc">日均阅读</div>
+                  </div>
+                  <div class="stat-card">
+                    <div class="stat-number">{{ pagesPerMinute.toFixed(1) }}</div>
+                    <div class="stat-desc">页/分钟</div>
+                  </div>
+                </div>
+                <div class="goal-section">
+                  <div class="goal-header">
+                    <span>今日阅读目标</span>
+                    <span>{{ readingGoalProgress }}%</span>
+                  </div>
+                  <el-progress 
+                    :percentage="readingGoalProgress" 
+                    :stroke-width="10"
+                    :color="readingGoalProgress >= 100 ? '#67c23a' : '#409eff'"
+                  />
+                </div>
+                <el-button 
+                  type="primary" 
+                  @click="handleDailyCheckIn" 
+                  class="checkin-btn"
+                >
+                  <Star /> 每日打卡
+                </el-button>
+              </div>
+            </div>
+
+            <div v-else-if="readerStore.sidebarTab === 'info'" class="book-info-panel">
+              <div class="info-card" v-if="readerStore.smartInfo">
+                <h3 class="book-title">{{ readerStore.book?.title || '未知书籍' }}</h3>
+                
+                <div class="info-section" v-if="readerStore.smartInfo.author">
+                  <div class="info-label">作者</div>
+                  <div class="info-value">{{ readerStore.smartInfo.author }}</div>
+                </div>
+
+                <div class="info-section">
+                  <div class="info-label">标签</div>
+                  <div class="tags-list">
+                    <el-tag 
+                      v-for="tag in readerStore.smartInfo.tags" 
+                      :key="tag" 
+                      size="small"
+                      class="book-tag"
+                    >
+                      {{ tag }}
+                    </el-tag>
+                  </div>
+                </div>
+
+                <div class="info-section" v-if="readerStore.smartInfo.summary">
+                  <div class="info-label">书籍摘要</div>
+                  <div class="info-value summary-text">{{ readerStore.smartInfo.summary }}</div>
+                </div>
+
+                <div class="info-section">
+                  <div class="info-label">章节数</div>
+                  <div class="info-value">{{ readerStore.chapters.length }} 章</div>
+                </div>
+
+                <div class="info-section">
+                  <div class="info-label">总页数</div>
+                  <div class="info-value">{{ readerStore.totalPages }} 页</div>
+                </div>
+              </div>
+
+              <div class="info-actions">
+                <el-button @click="handleReparseChapters" :icon="Refresh">
+                  重新识别章节
+                </el-button>
+                <el-button @click="handleCleanText" :icon="MagicStick" :loading="isCleaningText">
+                  清理文本
+                </el-button>
               </div>
             </div>
           </div>
@@ -657,7 +1140,7 @@ watch(
               <div
                 class="theme-option"
                 :class="{ active: readingConfig?.theme === 'light' }"
-                @click="configStore.updateReadingConfig({ theme: 'light' })"
+                @click="handleThemeChange('light')"
               >
                 <div class="theme-preview theme-light-preview" />
                 <span>日间</span>
@@ -665,7 +1148,7 @@ watch(
               <div
                 class="theme-option"
                 :class="{ active: readingConfig?.theme === 'dark' }"
-                @click="configStore.updateReadingConfig({ theme: 'dark' })"
+                @click="handleThemeChange('dark')"
               >
                 <div class="theme-preview theme-dark-preview" />
                 <span>夜间</span>
@@ -673,10 +1156,112 @@ watch(
               <div
                 class="theme-option"
                 :class="{ active: readingConfig?.theme === 'eye' }"
-                @click="configStore.updateReadingConfig({ theme: 'eye' })"
+                @click="handleThemeChange('eye')"
               >
                 <div class="theme-preview theme-eye-preview" />
                 <span>护眼</span>
+              </div>
+              <div
+                class="theme-option"
+                :class="{ active: readingConfig?.theme === 'sepia' }"
+                @click="handleThemeChange('sepia')"
+              >
+                <div class="theme-preview theme-sepia-preview" />
+                <span>羊皮纸</span>
+              </div>
+              <div
+                class="theme-option"
+                :class="{ active: readingConfig?.theme === 'gray' }"
+                @click="handleThemeChange('gray')"
+              >
+                <div class="theme-preview theme-gray-preview" />
+                <span>灰调</span>
+              </div>
+              <div
+                class="theme-option"
+                :class="{ active: readingConfig?.theme === 'blue' }"
+                @click="handleThemeChange('blue')"
+              >
+                <div class="theme-preview theme-blue-preview" />
+                <span>深蓝</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="setting-group">
+            <h4 class="group-title">自定义背景</h4>
+            <div class="control-row">
+              <el-button @click="handleUploadBackground" :icon="Picture">
+                上传背景图
+              </el-button>
+              <el-button 
+                v-if="readingConfig?.customBackground" 
+                text 
+                type="danger"
+                @click="handleClearBackground"
+              >
+                清除
+              </el-button>
+            </div>
+            <div class="opacity-control" v-if="readingConfig?.customBackground">
+              <h4 class="group-title">
+                透明度
+                <span class="current-value">{{ readingConfig.backgroundOpacity }}%</span>
+              </h4>
+              <el-slider
+                :model-value="readingConfig.backgroundOpacity"
+                :min="10"
+                :max="100"
+                :step="5"
+                @change="handleAdjustOpacity"
+              />
+            </div>
+          </div>
+
+          <div class="setting-group">
+            <h4 class="group-title">字体设置</h4>
+            <el-button @click="handleUploadFont" :icon="Brush">
+              导入自定义字体
+            </el-button>
+            <div class="font-path" v-if="readingConfig?.customFont">
+              <span class="current-value">已导入自定义字体</span>
+            </div>
+          </div>
+
+          <div class="setting-group">
+            <h4 class="group-title">排版布局</h4>
+            <div class="layout-options">
+              <div class="layout-row">
+                <span class="layout-label">页面布局</span>
+                <el-radio-group 
+                  :model-value="readingConfig?.pageLayout"
+                  @change="handlePageLayoutChange"
+                >
+                  <el-radio-button value="single">
+                    <el-icon><Files /></el-icon>
+                    单页
+                  </el-radio-button>
+                  <el-radio-button value="double">
+                    <el-icon><Tickets /></el-icon>
+                    双页
+                  </el-radio-button>
+                </el-radio-group>
+              </div>
+              <div class="layout-row">
+                <span class="layout-label">屏幕方向</span>
+                <el-radio-group 
+                  :model-value="readingConfig?.orientation"
+                  @change="handleOrientationChange"
+                >
+                  <el-radio-button value="portrait">
+                    <el-icon><Grid /></el-icon>
+                    竖屏
+                  </el-radio-button>
+                  <el-radio-button value="landscape">
+                    <el-icon><FullScreen /></el-icon>
+                    横屏
+                  </el-radio-button>
+                </el-radio-group>
               </div>
             </div>
           </div>
@@ -782,6 +1367,34 @@ watch(
                 :style="{ backgroundColor: color }"
                 @click="configStore.updateReadingConfig({ highlightColor: color })"
               />
+            </div>
+          </div>
+
+          <div class="setting-group">
+            <h4 class="group-title">自动翻页</h4>
+            <div class="auto-turn-settings">
+              <div class="control-row">
+                <el-switch
+                  :model-value="readerStore.autoTurnEnabled"
+                  @change="handleToggleAutoTurn"
+                  active-text="开启"
+                  inactive-text="关闭"
+                />
+              </div>
+              <div class="speed-control" v-if="readerStore.autoTurnEnabled">
+                <h4 class="group-title">
+                  翻页速度
+                  <span class="current-value">{{ readerStore.autoTurnSpeed }}秒/页</span>
+                </h4>
+                <el-slider
+                  :model-value="readerStore.autoTurnSpeed"
+                  :min="5"
+                  :max="120"
+                  :step="5"
+                  :marks="{ 10: '10s', 30: '30s', 60: '1min', 120: '2min' }"
+                  @change="(val) => { readerStore.setAutoTurnSpeed(val); autoTurnSpeedLocal = val }"
+                />
+              </div>
             </div>
           </div>
 
@@ -1533,6 +2146,429 @@ watch(
     padding: 8px 12px;
     background: var(--bg-secondary);
     border-radius: 4px;
+  }
+}
+
+.theme-sepia-preview {
+  background: #f4ecd8;
+}
+
+.theme-gray-preview {
+  background: #e8e8e8;
+}
+
+.theme-blue-preview {
+  background: #1e3a5f;
+}
+
+.reader-double-page {
+  display: flex;
+  gap: 20px;
+  padding: 20px;
+  height: 100%;
+  overflow: hidden !important;
+
+  .page-content {
+    flex: 1;
+    max-width: 50%;
+    background: var(--reader-bg);
+    border-radius: 8px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+    padding: 40px !important;
+    overflow: hidden hidden;
+    height: 100%;
+    box-sizing: border-box;
+  }
+}
+
+.reader-single-page {
+  .page-content {
+    max-width: 900px;
+    margin: 0 auto;
+    height: 100%;
+    overflow-y: auto;
+    overflow-x: hidden;
+  }
+}
+
+.reader-portrait {
+  .reader-content-area {
+    display: flex;
+    flex-direction: column;
+  }
+}
+
+.reader-landscape {
+  .reader-content-area {
+    display: flex;
+    flex-direction: row;
+  }
+}
+
+.reader-custom-bg {
+  .reader-container,
+  .reader-content-area {
+    background-image: var(--reader-bg-image);
+    background-size: cover;
+    background-position: center;
+    background-repeat: no-repeat;
+    background-blend-mode: overlay;
+    position: relative;
+  }
+
+  .reader-container::before,
+  .reader-content-area::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: var(--reader-bg);
+    opacity: calc(1 - var(--reader-bg-opacity, 1));
+    z-index: 0;
+    pointer-events: none;
+  }
+
+  .reader-content {
+    position: relative;
+    z-index: 1;
+  }
+}
+
+.progress-bar-draggable {
+  cursor: pointer;
+  height: 6px !important;
+
+  &:hover {
+    height: 8px !important;
+  }
+
+  .progress-fill {
+    position: relative;
+
+    .progress-handle {
+      position: absolute;
+      right: -6px;
+      top: 50%;
+      transform: translateY(-50%);
+      width: 12px;
+      height: 12px;
+      background: var(--accent-color);
+      border-radius: 50%;
+      opacity: 0;
+      transition: opacity 0.2s;
+      box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+    }
+  }
+
+  &:hover .progress-handle {
+    opacity: 1;
+  }
+}
+
+.goto-percent-popover {
+  position: absolute;
+  right: 20px;
+  top: -60px;
+  display: flex;
+  gap: 8px;
+  padding: 12px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  z-index: 100;
+
+  .el-input {
+    width: 120px;
+  }
+}
+
+.auto-turn-indicator {
+  position: fixed;
+  bottom: 80px;
+  right: 20px;
+  padding: 12px 16px;
+  border-radius: 8px;
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+
+  .auto-turn-status {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    color: var(--text-primary);
+
+    .running {
+      color: #67c23a;
+      animation: pulse 1.5s ease-in-out infinite;
+    }
+  }
+
+  .auto-turn-speed {
+    font-size: 12px;
+    color: var(--text-secondary);
+  }
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.stats-floating-panel {
+  position: fixed;
+  top: 80px;
+  right: 20px;
+  width: 280px;
+  padding: 16px;
+  border-radius: 12px;
+  z-index: 100;
+
+  .stats-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 16px;
+
+    .stats-title {
+      font-size: 15px;
+      font-weight: 600;
+      color: var(--text-primary);
+    }
+  }
+
+  .stats-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+
+    .stat-item {
+      background: var(--bg-secondary);
+      padding: 12px;
+      border-radius: 8px;
+      text-align: center;
+
+      &.full-width {
+        grid-column: 1 / -1;
+        text-align: left;
+      }
+
+      .stat-value {
+        font-size: 18px;
+        font-weight: 600;
+        color: var(--accent-color);
+        margin-bottom: 4px;
+      }
+
+      .stat-label {
+        font-size: 12px;
+        color: var(--text-secondary);
+      }
+
+      .goal-progress {
+        .goal-label {
+          font-size: 13px;
+          color: var(--text-primary);
+          margin-bottom: 8px;
+        }
+      }
+    }
+  }
+}
+
+.stats-panel {
+  padding: 16px;
+  height: 100%;
+  overflow-y: auto;
+
+  .stats-card {
+    background: var(--bg-secondary);
+    border-radius: 12px;
+    padding: 20px;
+
+    .stats-card-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 16px;
+      font-weight: 600;
+      color: var(--text-primary);
+      margin-bottom: 20px;
+
+      .el-icon {
+        color: var(--accent-color);
+      }
+    }
+
+    .stats-grid-2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      margin-bottom: 20px;
+
+      .stat-card {
+        background: var(--bg-primary);
+        padding: 16px;
+        border-radius: 8px;
+        text-align: center;
+
+        .stat-number {
+          font-size: 20px;
+          font-weight: 700;
+          color: var(--accent-color);
+          margin-bottom: 4px;
+        }
+
+        .stat-desc {
+          font-size: 12px;
+          color: var(--text-secondary);
+        }
+      }
+    }
+
+    .goal-section {
+      margin-bottom: 20px;
+
+      .goal-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 8px;
+        font-size: 13px;
+        color: var(--text-primary);
+      }
+    }
+
+    .checkin-btn {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+    }
+  }
+}
+
+.book-info-panel {
+  padding: 16px;
+  height: 100%;
+  overflow-y: auto;
+
+  .info-card {
+    margin-bottom: 20px;
+
+    .book-title {
+      font-size: 18px;
+      font-weight: 700;
+      color: var(--text-primary);
+      margin-bottom: 20px;
+      text-align: center;
+    }
+
+    .info-section {
+      margin-bottom: 16px;
+
+      .info-label {
+        font-size: 12px;
+        color: var(--text-secondary);
+        margin-bottom: 6px;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+      }
+
+      .info-value {
+        font-size: 14px;
+        color: var(--text-primary);
+        line-height: 1.6;
+
+        &.summary-text {
+          font-size: 13px;
+          color: var(--text-secondary);
+          line-height: 1.8;
+          padding: 12px;
+          background: var(--bg-secondary);
+          border-radius: 8px;
+        }
+      }
+
+      .tags-list {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+
+        .book-tag {
+          margin: 0;
+        }
+      }
+    }
+  }
+
+  .info-actions {
+    display: flex;
+    gap: 12px;
+
+    .el-button {
+      flex: 1;
+    }
+  }
+}
+
+.settings-panel {
+  .opacity-control {
+    margin-top: 16px;
+  }
+
+  .font-path {
+    margin-top: 12px;
+
+    .current-value {
+      font-size: 12px;
+      color: #67c23a;
+    }
+  }
+
+  .layout-options {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+
+    .layout-row {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+
+      .layout-label {
+        font-size: 13px;
+        color: var(--text-secondary);
+      }
+
+      .el-radio-group {
+        width: 100%;
+
+        .el-radio-button {
+          flex: 1;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          gap: 4px;
+
+          .el-icon {
+            font-size: 14px;
+          }
+        }
+      }
+    }
+  }
+
+  .auto-turn-settings {
+    .speed-control {
+      margin-top: 16px;
+    }
   }
 }
 </style>

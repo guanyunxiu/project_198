@@ -1,7 +1,7 @@
 import { ipcMain, dialog, shell, app } from 'electron'
-import { existsSync, statSync, readFileSync, writeFileSync, mkdirSync } from 'fs'
+import { existsSync, statSync, readFileSync, writeFileSync, mkdirSync, copyFileSync } from 'fs'
 import { join, dirname, basename, extname } from 'path'
-import { bookDb, categoryDb, bookmarkDb, progressDb } from '../db'
+import { bookDb, categoryDb, bookmarkDb, progressDb, statsDb, goalDb } from '../db'
 import {
   getConfig,
   getReadingConfig,
@@ -23,7 +23,7 @@ import {
   detectEncoding,
   readTextFile
 } from '../utils/file'
-import { parseTxtFile, paginateContent, getPageContent, extractChapters } from '../utils/txtParser'
+import { parseTxtFile, paginateContent, getPageContent, extractChapters, cleanText, smartExtractChapters, extractBookSmartInfo } from '../utils/txtParser'
 import { parseEpubFile, paginateEpubContent, getEpubPageContent } from '../utils/epubParser'
 import {
   toggleFullscreen,
@@ -43,7 +43,12 @@ import type {
   PageContent,
   SearchResult,
   SplitVolumeOption,
-  ExportBookData
+  ExportBookData,
+  ReadingStats,
+  ReadingGoal,
+  ThemeConfig,
+  BookSmartInfo,
+  TextCleanResult
 } from '../types'
 
 const bookCache = new Map<number, {
@@ -281,12 +286,20 @@ export function registerIpcHandlers(): void {
     let encoding = 'utf-8'
     let totalCharacters = 0
     let coverPath: string | null = null
+    let summary = ''
+    let tags = ''
 
     try {
       if (fileType === 'txt') {
-        const result = parseTxtFile(filePath)
+        const result = parseTxtFile(filePath, undefined, { smartDetection: true, autoClean: true })
         encoding = result.encoding
         totalCharacters = result.totalCharacters
+        if (result.smartInfo) {
+          author = result.smartInfo.author || author
+          title = result.smartInfo.estimatedChapters > 1 ? title : getFileNameWithoutExtension(filePath)
+          summary = result.smartInfo.summary || ''
+          tags = result.smartInfo.tags.join(',') || ''
+        }
       } else if (fileType === 'epub') {
         const result = parseEpubFile(filePath)
         title = result.title || title
@@ -316,7 +329,9 @@ export function registerIpcHandlers(): void {
       lastReadPosition: 0,
       lastReadTime: Date.now(),
       totalReadingTime: 0,
-      notes: ''
+      notes: '',
+      summary,
+      tags
     })
 
     return bookId
@@ -642,6 +657,195 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle('reader:generateToc', (_e, content) => {
     return extractChapters(content)
+  })
+
+  ipcMain.handle('reader:smartGenerateToc', (_e, content) => {
+    return smartExtractChapters(content)
+  })
+
+  ipcMain.handle('reader:cleanText', (_e, content, options) => {
+    return cleanText(content, options)
+  })
+
+  ipcMain.handle('reader:getSmartInfo', (_e, bookId) => {
+    const book = bookDb.getById(bookId)
+    if (!book) throw new Error('书籍不存在')
+
+    const cache = bookCache.get(bookId)
+    if (!cache) throw new Error('书籍未加载')
+
+    return extractBookSmartInfo(cache.content, book.title)
+  })
+
+  ipcMain.handle('reader:goToPercent', (_e, bookId, percent) => {
+    const book = bookDb.getById(bookId)
+    if (!book) throw new Error('书籍不存在')
+
+    const cache = bookCache.get(bookId)
+    if (!cache) throw new Error('书籍未加载')
+
+    const targetPage = Math.max(1, Math.min(cache.totalPages, Math.floor(cache.totalPages * percent / 100)))
+    return cache.pages.find(p => p.page === targetPage) || null
+  })
+
+  ipcMain.handle('stats:getByDate', (_e, date) => statsDb.getByDate(date))
+  ipcMain.handle('stats:getByBookId', (_e, bookId, limit) => statsDb.getByBookId(bookId, limit))
+  ipcMain.handle('stats:getDateRange', (_e, startDate, endDate) => statsDb.getDateRange(startDate, endDate))
+  ipcMain.handle('stats:addReading', (_e, bookId, pagesRead, charactersRead, readingTime) => {
+    return statsDb.addReading(bookId, pagesRead, charactersRead, readingTime)
+  })
+  ipcMain.handle('stats:getDailyAverage', (_e, days) => statsDb.getDailyAverage(days))
+  ipcMain.handle('stats:getPagesPerMinute', (_e, bookId) => statsDb.getPagesPerMinute(bookId))
+
+  ipcMain.handle('goals:getAll', () => goalDb.getAll())
+  ipcMain.handle('goals:getActive', () => goalDb.getActive())
+  ipcMain.handle('goals:create', (_e, goal) => goalDb.create(goal))
+  ipcMain.handle('goals:updateProgress', (_e, id, increment) => goalDb.updateProgress(id, increment))
+  ipcMain.handle('goals:checkIn', (_e, type) => goalDb.checkIn(type))
+  ipcMain.handle('goals:delete', (_e, id) => goalDb.delete(id))
+
+  ipcMain.handle('theme:getPresetThemes', () => {
+    return [
+      {
+        name: 'light',
+        displayName: '日间',
+        bgPrimary: '#ffffff',
+        bgSecondary: '#f5f5f5',
+        bgTertiary: '#fafafa',
+        textPrimary: '#333333',
+        textSecondary: '#666666',
+        textTertiary: '#999999',
+        borderColor: '#e5e5e5',
+        accentColor: '#409eff',
+        readerBg: '#fdfbf7',
+        readerText: '#333333',
+        bgPrimaryRgb: '255, 255, 255'
+      },
+      {
+        name: 'dark',
+        displayName: '夜间',
+        bgPrimary: '#1a1a2e',
+        bgSecondary: '#16213e',
+        bgTertiary: '#0f0f1a',
+        textPrimary: '#e5e5e5',
+        textSecondary: '#a0a0a0',
+        textTertiary: '#666666',
+        borderColor: '#2d2d44',
+        accentColor: '#66b1ff',
+        readerBg: '#1a1a2e',
+        readerText: '#c0c0c0',
+        bgPrimaryRgb: '26, 26, 46'
+      },
+      {
+        name: 'eye',
+        displayName: '护眼',
+        bgPrimary: '#c7edcc',
+        bgSecondary: '#b8e8c2',
+        bgTertiary: '#d4f0d9',
+        textPrimary: '#2f4f4f',
+        textSecondary: '#3d5c5c',
+        textTertiary: '#5a7a7a',
+        borderColor: '#a0d4a8',
+        accentColor: '#2e8b57',
+        readerBg: '#c7edcc',
+        readerText: '#2f4f4f',
+        bgPrimaryRgb: '199, 237, 204'
+      },
+      {
+        name: 'sepia',
+        displayName: '羊皮纸',
+        bgPrimary: '#f4ecd8',
+        bgSecondary: '#e8dcc8',
+        bgTertiary: '#f0e6d0',
+        textPrimary: '#5b4636',
+        textSecondary: '#7a6555',
+        textTertiary: '#998877',
+        borderColor: '#d4c4a8',
+        accentColor: '#8b7355',
+        readerBg: '#f4ecd8',
+        readerText: '#5b4636',
+        bgPrimaryRgb: '244, 236, 216'
+      },
+      {
+        name: 'gray',
+        displayName: '灰调',
+        bgPrimary: '#f0f0f0',
+        bgSecondary: '#e0e0e0',
+        bgTertiary: '#e8e8e8',
+        textPrimary: '#333333',
+        textSecondary: '#666666',
+        textTertiary: '#999999',
+        borderColor: '#d0d0d0',
+        accentColor: '#666666',
+        readerBg: '#f0f0f0',
+        readerText: '#333333',
+        bgPrimaryRgb: '240, 240, 240'
+      },
+      {
+        name: 'blue',
+        displayName: '深蓝',
+        bgPrimary: '#0a192f',
+        bgSecondary: '#112240',
+        bgTertiary: '#0d1a2d',
+        textPrimary: '#e6f1ff',
+        textSecondary: '#a8b2d1',
+        textTertiary: '#8892b0',
+        borderColor: '#233554',
+        accentColor: '#64ffda',
+        readerBg: '#0a192f',
+        readerText: '#e6f1ff',
+        bgPrimaryRgb: '10, 25, 47'
+      }
+    ]
+  })
+
+  ipcMain.handle('file:uploadBackground', async () => {
+    const result = await dialog.showOpenDialog({
+      properties: ['openFile'],
+      filters: [{ name: '图片文件', extensions: ['jpg', 'jpeg', 'png', 'gif', 'webp'] }]
+    })
+
+    if (!result.canceled && result.filePaths.length > 0) {
+      const userDataPath = app.getPath('userData')
+      const backgroundsDir = join(userDataPath, 'backgrounds')
+      if (!existsSync(backgroundsDir)) {
+        mkdirSync(backgroundsDir, { recursive: true })
+      }
+
+      const originalPath = result.filePaths[0]
+      const fileName = `bg_${Date.now()}${extname(originalPath)}`
+      const newPath = join(backgroundsDir, fileName)
+      copyFileSync(originalPath, newPath)
+      return newPath
+    }
+    return null
+  })
+
+  ipcMain.handle('file:uploadFont', async () => {
+    const result = await dialog.showOpenDialog({
+      properties: ['openFile'],
+      filters: [{ name: '字体文件', extensions: ['ttf', 'otf', 'woff', 'woff2'] }]
+    })
+
+    if (!result.canceled && result.filePaths.length > 0) {
+      const userDataPath = app.getPath('userData')
+      const fontsDir = join(userDataPath, 'fonts')
+      if (!existsSync(fontsDir)) {
+        mkdirSync(fontsDir, { recursive: true })
+      }
+
+      const originalPath = result.filePaths[0]
+      const fileName = `font_${Date.now()}${extname(originalPath)}`
+      const newPath = join(fontsDir, fileName)
+      copyFileSync(originalPath, newPath)
+      return { path: newPath, name: basename(originalPath, extname(originalPath)) }
+    }
+    return null
+  })
+
+  ipcMain.handle('book:updateSmartInfo', (_e, bookId, updates) => {
+    bookDb.update(bookId, updates)
+    return bookDb.getById(bookId)
   })
 
   ipcMain.handle('shell:openExternal', (_e, url) => {

@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import type { Book, BookCache, Chapter, PageContent, Bookmark, SearchResult, SearchState } from '@/types'
+import type { Book, BookCache, Chapter, PageContent, Bookmark, SearchResult, SearchState, ReadingStats, ReadingGoal, BookSmartInfo } from '@/types'
 
 export const useReaderStore = defineStore('reader', () => {
   const book = ref<Book | null>(null)
@@ -9,12 +9,22 @@ export const useReaderStore = defineStore('reader', () => {
   const currentPosition = ref(0)
   const currentChapter = ref<Chapter | null>(null)
   const currentContent = ref<PageContent | null>(null)
+  const nextPageContent = ref<PageContent | null>(null)
   const fullContent = ref<{ content: string; chapters: Chapter[]; isLargeFile?: boolean } | null>(null)
   const bookmarks = ref<Bookmark[]>([])
   const isLoading = ref(false)
   const showSidebar = ref(false)
-  const sidebarTab = ref<'chapters' | 'bookmarks' | 'search'>('chapters')
+  const sidebarTab = ref<'chapters' | 'bookmarks' | 'search' | 'stats'>('chapters')
   const isLargeFile = ref(false)
+  const autoTurnEnabled = ref(false)
+  const autoTurnSpeed = ref(30)
+  const autoTurnTimer = ref<number | null>(null)
+  const readingStartTime = ref(0)
+  const pagesReadInSession = ref(0)
+  const smartInfo = ref<BookSmartInfo | null>(null)
+  const readingStats = ref<ReadingStats[]>([])
+  const dailyGoal = ref<ReadingGoal | null>(null)
+  const isDraggingProgress = ref(false)
   
   const searchState = ref<SearchState>({
     keyword: '',
@@ -76,6 +86,11 @@ export const useReaderStore = defineStore('reader', () => {
 
     const content = await window.electronAPI.reader.getPage(book.value.id, page)
     if (content) {
+      if (currentContent.value && page !== currentPage.value) {
+        pagesReadInSession.value++
+        await recordReadingStats(1, content.endPosition - content.startPosition)
+      }
+
       currentContent.value = content
       currentPage.value = page
       currentPosition.value = content.startPosition
@@ -86,6 +101,19 @@ export const useReaderStore = defineStore('reader', () => {
       currentChapter.value = chapter || chapters.value[0] || null
 
       await window.electronAPI.book.updateProgress(book.value.id, page, content.startPosition)
+
+      if (currentPage.value < totalPages.value) {
+        nextPageContent.value = await window.electronAPI.reader.getPage(book.value.id, page + 1)
+      }
+    }
+  }
+
+  async function loadNextPageForDouble() {
+    if (!book.value) return
+    if (currentPage.value + 1 <= totalPages.value) {
+      nextPageContent.value = await window.electronAPI.reader.getPage(book.value.id, currentPage.value + 1)
+    } else {
+      nextPageContent.value = null
     }
   }
 
@@ -200,19 +228,121 @@ export const useReaderStore = defineStore('reader', () => {
     return content.replace(regex, '<mark class="search-highlight">$1</mark>')
   }
 
+  async function goToPercent(percent: number) {
+    if (!book.value) return
+    const content = await window.electronAPI.reader.goToPercent(book.value.id, percent)
+    if (content) {
+      await loadPage(content.page)
+    }
+  }
+
+  async function recordReadingStats(pages: number, characters: number) {
+    if (!book.value) return
+    const now = Date.now()
+    const elapsed = readingStartTime.value > 0 ? Math.floor((now - readingStartTime.value) / 1000) : 0
+    if (elapsed > 0) {
+      await window.electronAPI.stats.addReading(book.value.id, pages, characters, elapsed)
+    }
+  }
+
+  async function loadReadingStats() {
+    if (!book.value) return
+    readingStats.value = await window.electronAPI.stats.getByBookId(book.value.id, 30)
+  }
+
+  async function loadSmartInfo() {
+    if (!book.value) return
+    try {
+      smartInfo.value = await window.electronAPI.reader.getSmartInfo(book.value.id)
+    } catch (err) {
+      console.error('Load smart info error:', err)
+    }
+  }
+
+  function startAutoTurn(speed?: number) {
+    if (speed !== undefined) {
+      autoTurnSpeed.value = speed
+    }
+    autoTurnEnabled.value = true
+    readingStartTime.value = Date.now()
+    
+    if (autoTurnTimer.value) {
+      clearInterval(autoTurnTimer.value)
+    }
+    
+    autoTurnTimer.value = window.setInterval(async () => {
+      if (currentPage.value < totalPages.value) {
+        await nextPage()
+      } else {
+        stopAutoTurn()
+      }
+    }, autoTurnSpeed.value * 1000)
+  }
+
+  function stopAutoTurn() {
+    autoTurnEnabled.value = false
+    if (autoTurnTimer.value) {
+      clearInterval(autoTurnTimer.value)
+      autoTurnTimer.value = null
+    }
+  }
+
+  function setAutoTurnSpeed(speed: number) {
+    autoTurnSpeed.value = speed
+    if (autoTurnEnabled.value) {
+      startAutoTurn()
+    }
+  }
+
+  async function toggleAutoTurn() {
+    if (autoTurnEnabled.value) {
+      stopAutoTurn()
+    } else {
+      startAutoTurn()
+    }
+  }
+
+  async function cleanText(options?: any) {
+    if (!book.value || !fullContent.value) return null
+    const result = await window.electronAPI.reader.cleanText(fullContent.value.content, options)
+    return result
+  }
+
+  async function reparseChapters() {
+    if (!book.value || !fullContent.value) return
+    const newChapters = await window.electronAPI.reader.smartGenerateToc(fullContent.value.content)
+    if (cache.value) {
+      cache.value.chapters = newChapters
+    }
+  }
+
+  async function checkInDaily() {
+    const result = await window.electronAPI.goals.checkIn('daily')
+    return result
+  }
+
   function closeBook() {
     if (book.value) {
+      if (readingStartTime.value > 0) {
+        recordReadingStats(pagesReadInSession.value, 0)
+      }
       window.electronAPI.reader.closeBook(book.value.id)
     }
+    stopAutoTurn()
     book.value = null
     cache.value = null
     currentPage.value = 1
     currentPosition.value = 0
     currentChapter.value = null
     currentContent.value = null
+    nextPageContent.value = null
     fullContent.value = null
     bookmarks.value = []
     isLargeFile.value = false
+    pagesReadInSession.value = 0
+    readingStartTime.value = 0
+    smartInfo.value = null
+    readingStats.value = []
     resetSearch()
   }
 
@@ -227,12 +357,20 @@ export const useReaderStore = defineStore('reader', () => {
     currentPosition,
     currentChapter,
     currentContent,
+    nextPageContent,
     fullContent,
     bookmarks,
     isLoading,
     showSidebar,
     sidebarTab,
     isLargeFile,
+    autoTurnEnabled,
+    autoTurnSpeed,
+    pagesReadInSession,
+    smartInfo,
+    readingStats,
+    dailyGoal,
+    isDraggingProgress,
     searchState,
     totalPages,
     chapters,
@@ -241,10 +379,12 @@ export const useReaderStore = defineStore('reader', () => {
     openBook,
     loadFullContent,
     loadPage,
+    loadNextPageForDouble,
     nextPage,
     prevPage,
     goToPage,
     goToChapter,
+    goToPercent,
     loadBookmarks,
     addBookmark,
     deleteBookmark,
@@ -255,6 +395,15 @@ export const useReaderStore = defineStore('reader', () => {
     prevSearchResult,
     splitVolume,
     highlightKeyword,
+    startAutoTurn,
+    stopAutoTurn,
+    setAutoTurnSpeed,
+    toggleAutoTurn,
+    loadReadingStats,
+    loadSmartInfo,
+    cleanText,
+    reparseChapters,
+    checkInDaily,
     closeBook,
     toggleSidebar
   }

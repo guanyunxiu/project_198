@@ -135,7 +135,13 @@ function resetReadingConfig() {
     theme: 'light',
     readMode: 'scroll',
     pageChars: 800,
-    highlightColor: '#ffeb3b'
+    highlightColor: '#ffeb3b',
+    backgroundOpacity: 100,
+    fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',
+    pageLayout: 'single',
+    orientation: 'portrait',
+    autoTurnSpeed: 30,
+    autoTurnEnabled: false
   })
   ElMessage.success('阅读设置已重置')
 }
@@ -355,7 +361,62 @@ function displayShortcut(value: string): string {
                 <el-radio-button value="light">日间</el-radio-button>
                 <el-radio-button value="dark">夜间</el-radio-button>
                 <el-radio-button value="eye">护眼</el-radio-button>
+                <el-radio-button value="sepia">羊皮纸</el-radio-button>
+                <el-radio-button value="gray">灰调</el-radio-button>
+                <el-radio-button value="blue">深蓝</el-radio-button>
               </el-radio-group>
+            </div>
+
+            <div class="setting-item">
+              <label>
+                每日阅读目标
+                <span class="value">{{ configStore.appConfig?.dailyReadingGoal || 30 }}分钟</span>
+              </label>
+              <el-slider
+                :model-value="configStore.appConfig?.dailyReadingGoal || 30"
+                :min="10"
+                :max="180"
+                :step="10"
+                :marks="{ 30: '30min', 60: '1h', 120: '2h', 180: '3h' }"
+                @change="(val) => configStore.updateAppConfig({ dailyReadingGoal: val })"
+              />
+            </div>
+
+            <div class="setting-item">
+              <label>默认页面布局</label>
+              <el-radio-group
+                v-model="configStore.readingConfig!.pageLayout"
+                @change="(val) => configStore.updateReadingConfig({ pageLayout: val })"
+              >
+                <el-radio-button value="single">单页</el-radio-button>
+                <el-radio-button value="double">双页</el-radio-button>
+              </el-radio-group>
+            </div>
+
+            <div class="setting-item">
+              <label>默认屏幕方向</label>
+              <el-radio-group
+                v-model="configStore.readingConfig!.orientation"
+                @change="(val) => configStore.updateReadingConfig({ orientation: val })"
+              >
+                <el-radio-button value="portrait">竖屏</el-radio-button>
+                <el-radio-button value="landscape">横屏</el-radio-button>
+              </el-radio-group>
+            </div>
+
+            <div class="setting-item">
+              <label>
+                默认自动翻页速度
+                <span class="value">{{ configStore.readingConfig?.autoTurnSpeed || 30 }}秒/页</span>
+              </label>
+              <el-slider
+                :model-value="configStore.readingConfig?.autoTurnSpeed || 30"
+                :min="5"
+                :max="120"
+                :step="5"
+                :marks="{ 10: '10s', 30: '30s', 60: '1min', 120: '2min' }"
+                @change="(val) => configStore.updateReadingConfig({ autoTurnSpeed: val })"
+              />
             </div>
 
             <div class="setting-item">
@@ -775,10 +836,20 @@ function displayShortcut(value: string): string {
               <h3>功能特性</h3>
               <ul>
                 <li>📖 支持 TXT、EPUB、PDF、CHM 格式</li>
-                <li>🎨 三种主题（日间/夜间/护眼）</li>
+                <li>🎨 六种主题（日间/夜间/护眼/羊皮纸/灰调/深蓝）</li>
+                <li>🤖 AI智能分章，TXT无规则文本自动识别</li>
+                <li>📚 书籍摘要、作者、标签智能识别</li>
+                <li>📊 阅读速度统计、日均阅读、目标打卡</li>
+                <li>⏩ 自动翻页，速度可调</li>
+                <li>🧹 重复章节检测、空行清理、乱码修复</li>
+                <li>🖼️ 自定义背景图，透明度调节</li>
+                <li>🔤 自定义字体导入</li>
+                <li>📄 双页/单页切换阅读模式</li>
+                <li>🔄 横屏/竖屏阅读模式</li>
+                <li>🎯 阅读进度条精准拖拽，百分比跳转</li>
                 <li>📑 智能分页，章节识别</li>
                 <li>🔖 书签功能</li>
-                <li>📊 阅读进度保存</li>
+                <li>� 阅读进度保存</li>
                 <li>📁 批量扫描导入</li>
                 <li>🏷️ 分类管理</li>
                 <li>⌨️ 自定义快捷键</li>

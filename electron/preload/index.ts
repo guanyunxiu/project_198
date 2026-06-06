@@ -61,6 +61,7 @@ export interface IElectronAPI {
     batchExport: (bookIds: number[]) => Promise<ExportBookData[]>
     exportJson: (data: ExportBookData[]) => Promise<boolean>
     importJson: () => Promise<{ success: boolean; importedIds?: number[]; error?: string }>
+    updateSmartInfo: (bookId: number, updates: Partial<Book>) => Promise<Book | undefined>
   }
 
   bookmark: {
@@ -81,6 +82,8 @@ export interface IElectronAPI {
     openFolderDialog: () => Promise<string | null>
     detectEncoding: (filePath: string) => Promise<string>
     readText: (filePath: string, encoding?: string) => Promise<string>
+    uploadBackground: () => Promise<string | null>
+    uploadFont: () => Promise<{ path: string; name: string } | null>
   }
 
   reader: {
@@ -105,7 +108,33 @@ export interface IElectronAPI {
       saveDir: string
     }>
     generateToc: (content: string) => Promise<any[]>
+    smartGenerateToc: (content: string) => Promise<any[]>
+    cleanText: (content: string, options?: any) => Promise<any>
+    getSmartInfo: (bookId: number) => Promise<any>
+    goToPercent: (bookId: number, percent: number) => Promise<PageContent | null>
     closeBook: (bookId: number) => Promise<boolean>
+  }
+
+  stats: {
+    getByDate: (date: string) => Promise<any[]>
+    getByBookId: (bookId: number, limit?: number) => Promise<any[]>
+    getDateRange: (startDate: string, endDate: string) => Promise<any[]>
+    addReading: (bookId: number, pagesRead: number, charactersRead: number, readingTime: number) => Promise<number>
+    getDailyAverage: (days?: number) => Promise<number>
+    getPagesPerMinute: (bookId: number) => Promise<number>
+  }
+
+  goals: {
+    getAll: () => Promise<any[]>
+    getActive: () => Promise<any | null>
+    create: (goal: any) => Promise<number>
+    updateProgress: (id: number, increment: number) => Promise<number>
+    checkIn: (type: string) => Promise<{ success: boolean; streak: number }>
+    delete: (id: number) => Promise<boolean>
+  }
+
+  theme: {
+    getPresetThemes: () => Promise<any[]>
   }
 
   shell: {
@@ -158,7 +187,8 @@ const electronAPI: IElectronAPI = {
     batchImport: (filePaths) => ipcRenderer.invoke('book:batchImport', filePaths),
     batchExport: (bookIds) => ipcRenderer.invoke('book:batchExport', bookIds),
     exportJson: (data) => ipcRenderer.invoke('book:exportJson', data),
-    importJson: () => ipcRenderer.invoke('book:importJson')
+    importJson: () => ipcRenderer.invoke('book:importJson'),
+    updateSmartInfo: (bookId, updates) => ipcRenderer.invoke('book:updateSmartInfo', bookId, updates)
   },
 
   bookmark: {
@@ -179,7 +209,9 @@ const electronAPI: IElectronAPI = {
     openDialog: () => ipcRenderer.invoke('file:openDialog'),
     openFolderDialog: () => ipcRenderer.invoke('file:openFolderDialog'),
     detectEncoding: (filePath) => ipcRenderer.invoke('file:detectEncoding', filePath),
-    readText: (filePath, encoding) => ipcRenderer.invoke('file:readText', filePath, encoding)
+    readText: (filePath, encoding) => ipcRenderer.invoke('file:readText', filePath, encoding),
+    uploadBackground: () => ipcRenderer.invoke('file:uploadBackground'),
+    uploadFont: () => ipcRenderer.invoke('file:uploadFont')
   },
 
   reader: {
@@ -199,7 +231,38 @@ const electronAPI: IElectronAPI = {
       ipcRenderer.invoke('reader:splitVolume', bookId, options),
     generateToc: (content) =>
       ipcRenderer.invoke('reader:generateToc', content),
+    smartGenerateToc: (content) =>
+      ipcRenderer.invoke('reader:smartGenerateToc', content),
+    cleanText: (content, options) =>
+      ipcRenderer.invoke('reader:cleanText', content, options),
+    getSmartInfo: (bookId) =>
+      ipcRenderer.invoke('reader:getSmartInfo', bookId),
+    goToPercent: (bookId, percent) =>
+      ipcRenderer.invoke('reader:goToPercent', bookId, percent),
     closeBook: (bookId) => ipcRenderer.invoke('reader:closeBook', bookId)
+  },
+
+  stats: {
+    getByDate: (date) => ipcRenderer.invoke('stats:getByDate', date),
+    getByBookId: (bookId, limit = 30) => ipcRenderer.invoke('stats:getByBookId', bookId, limit),
+    getDateRange: (startDate, endDate) => ipcRenderer.invoke('stats:getDateRange', startDate, endDate),
+    addReading: (bookId, pagesRead, charactersRead, readingTime) =>
+      ipcRenderer.invoke('stats:addReading', bookId, pagesRead, charactersRead, readingTime),
+    getDailyAverage: (days = 7) => ipcRenderer.invoke('stats:getDailyAverage', days),
+    getPagesPerMinute: (bookId) => ipcRenderer.invoke('stats:getPagesPerMinute', bookId)
+  },
+
+  goals: {
+    getAll: () => ipcRenderer.invoke('goals:getAll'),
+    getActive: () => ipcRenderer.invoke('goals:getActive'),
+    create: (goal) => ipcRenderer.invoke('goals:create', goal),
+    updateProgress: (id, increment) => ipcRenderer.invoke('goals:updateProgress', id, increment),
+    checkIn: (type) => ipcRenderer.invoke('goals:checkIn', type),
+    delete: (id) => ipcRenderer.invoke('goals:delete', id)
+  },
+
+  theme: {
+    getPresetThemes: () => ipcRenderer.invoke('theme:getPresetThemes')
   },
 
   shell: {
