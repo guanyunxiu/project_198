@@ -27,6 +27,7 @@ import {
 } from '../utils/file'
 import { parseTxtFile, paginateContent, getPageContent, extractChapters } from '../utils/txtParser'
 import { parseEpubFile, paginateEpubContent, getEpubPageContent } from '../utils/epubParser'
+import { parsePdfFile, paginatePdfContent, getPdfPageContent } from '../utils/pdfParser'
 import {
   smartExtractChapters,
   cleanText,
@@ -518,7 +519,7 @@ export function registerIpcHandlers(): void {
     return result.canceled ? null : result.filePaths[0]
   })
 
-  ipcMain.handle('reader:openBook', (_e, bookId, pageChars = 800) => {
+  ipcMain.handle('reader:openBook', async (_e, bookId, pageChars = 800) => {
     const book = bookDb.getById(bookId)
     if (!book) throw new Error('书籍不存在')
 
@@ -539,6 +540,7 @@ export function registerIpcHandlers(): void {
 
     let content = ''
     let chapters: any[] = []
+    let totalPdfPages = 0
     const isLargeFile = book.totalCharacters > LARGE_FILE_THRESHOLD
 
     try {
@@ -559,7 +561,20 @@ export function registerIpcHandlers(): void {
         const result = parseEpubFile(book.filePath)
         content = result.content
         chapters = result.chapters
-      } else if (book.fileType === 'pdf' || book.fileType === 'chm') {
+      } else if (book.fileType === 'pdf') {
+        const result = await parsePdfFile(book.filePath)
+        content = result.content
+        chapters = result.chapters
+        totalPdfPages = result.totalPages
+
+        if (result.title && result.title !== book.title) {
+          bookDb.update(bookId, { title: result.title })
+        }
+        if (result.author && result.author !== book.author) {
+          bookDb.update(bookId, { author: result.author })
+        }
+        bookDb.update(bookId, { totalCharacters: result.totalCharacters })
+      } else if (book.fileType === 'chm') {
         content = `这是一本${book.fileType.toUpperCase()}格式的电子书，当前仅支持简易阅读模式。\n\n书名：${book.title}\n作者：${book.author}\n\n由于格式限制，部分功能可能不可用。`
         chapters = [{
           index: 0,
@@ -574,9 +589,14 @@ export function registerIpcHandlers(): void {
       throw new Error('解析书籍失败')
     }
 
-    const pagination = book.fileType === 'epub' || book.fileType === 'pdf' || book.fileType === 'chm'
-      ? paginateEpubContent(content, chapters, pageChars)
-      : paginateContent(content, chapters, pageChars)
+    let pagination
+    if (book.fileType === 'pdf') {
+      pagination = paginatePdfContent(content, chapters, pageChars)
+    } else if (book.fileType === 'epub' || book.fileType === 'chm') {
+      pagination = paginateEpubContent(content, chapters, pageChars)
+    } else {
+      pagination = paginateContent(content, chapters, pageChars)
+    }
 
     const cacheData = {
       content,

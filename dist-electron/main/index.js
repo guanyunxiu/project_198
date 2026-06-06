@@ -582,147 +582,6 @@ function applyThemeTemplate(templateId) {
     saveConfig();
   }
 }
-let mainWindow = null;
-let readingStartTime = null;
-let currentBookId = null;
-function getWindowBounds() {
-  const config = getConfig();
-  const { workArea } = electron.screen.getPrimaryDisplay();
-  let width = config.windowWidth || Math.min(1200, workArea.width - 100);
-  let height = config.windowHeight || Math.min(800, workArea.height - 100);
-  let x = config.windowX;
-  let y = config.windowY;
-  if (x === null || y === null) {
-    x = workArea.x + Math.floor((workArea.width - width) / 2);
-    y = workArea.y + Math.floor((workArea.height - height) / 2);
-  }
-  const display = electron.screen.getDisplayMatching({ x, y, width, height });
-  const displayWorkArea = display.workArea;
-  if (x < displayWorkArea.x) x = displayWorkArea.x;
-  if (y < displayWorkArea.y) y = displayWorkArea.y;
-  if (x + width > displayWorkArea.x + displayWorkArea.width) {
-    x = displayWorkArea.x + displayWorkArea.width - width;
-  }
-  if (y + height > displayWorkArea.y + displayWorkArea.height) {
-    y = displayWorkArea.y + displayWorkArea.height - height;
-  }
-  return { width, height, x, y };
-}
-function createWindow() {
-  const config = getConfig();
-  const bounds = getWindowBounds();
-  mainWindow = new electron.BrowserWindow({
-    width: bounds.width,
-    height: bounds.height,
-    x: bounds.x,
-    y: bounds.y,
-    minWidth: 900,
-    minHeight: 600,
-    show: false,
-    autoHideMenuBar: true,
-    backgroundColor: "#ffffff",
-    webPreferences: {
-      preload: path.join(__dirname, "../preload/index.js"),
-      sandbox: false,
-      contextIsolation: true,
-      nodeIntegration: false,
-      webSecurity: false
-    }
-  });
-  if (config.isMaximized) {
-    mainWindow.maximize();
-  }
-  if (config.startFullscreen) {
-    mainWindow.setFullScreen(true);
-  }
-  if (config.isAlwaysOnTop) {
-    mainWindow.setAlwaysOnTop(true, "floating");
-  }
-  mainWindow.on("ready-to-show", () => {
-    if (config.startMinimized) {
-      mainWindow == null ? void 0 : mainWindow.minimize();
-    } else {
-      mainWindow == null ? void 0 : mainWindow.show();
-    }
-  });
-  mainWindow.on("resize", () => {
-    if (!mainWindow) return;
-    const isMaximized = mainWindow.isMaximized();
-    if (!isMaximized) {
-      const bounds2 = mainWindow.getBounds();
-      updateConfig({
-        windowWidth: bounds2.width,
-        windowHeight: bounds2.height,
-        isMaximized: false
-      });
-    } else {
-      updateConfig({ isMaximized: true });
-    }
-  });
-  mainWindow.on("move", () => {
-    if (!mainWindow || mainWindow.isMaximized()) return;
-    const bounds2 = mainWindow.getBounds();
-    updateConfig({
-      windowX: bounds2.x,
-      windowY: bounds2.y
-    });
-  });
-  mainWindow.on("maximize", () => {
-    updateConfig({ isMaximized: true });
-  });
-  mainWindow.on("unmaximize", () => {
-    updateConfig({ isMaximized: false });
-  });
-  mainWindow.on("closed", () => {
-    saveReadingTime();
-    mainWindow = null;
-  });
-  if (process.env.VITE_DEV_SERVER_URL) {
-    mainWindow.loadURL(process.env.VITE_DEV_SERVER_URL);
-    mainWindow.webContents.openDevTools();
-  } else {
-    mainWindow.loadFile(path.join(__dirname, "../dist/index.html"));
-  }
-  return mainWindow;
-}
-function toggleFullscreen() {
-  if (!mainWindow) return false;
-  const willBeFullscreen = !mainWindow.isFullScreen();
-  mainWindow.setFullScreen(willBeFullscreen);
-  return willBeFullscreen;
-}
-function toggleAlwaysOnTop() {
-  if (!mainWindow) return false;
-  const willBeOnTop = !mainWindow.isAlwaysOnTop();
-  mainWindow.setAlwaysOnTop(willBeOnTop, "floating");
-  updateConfig({ isAlwaysOnTop: willBeOnTop });
-  return willBeOnTop;
-}
-function isAlwaysOnTop() {
-  return (mainWindow == null ? void 0 : mainWindow.isAlwaysOnTop()) ?? false;
-}
-function isFullscreen() {
-  return (mainWindow == null ? void 0 : mainWindow.isFullScreen()) ?? false;
-}
-function setReadingStart(bookId) {
-  currentBookId = bookId;
-  readingStartTime = Date.now();
-}
-function saveReadingTime() {
-  if (currentBookId !== null && readingStartTime !== null) {
-    const duration = Date.now() - readingStartTime;
-    if (duration > 1e3) {
-      try {
-        const { bookDb: bookDb2 } = require("./db");
-        bookDb2.addReadingTime(currentBookId, Math.floor(duration / 1e3));
-      } catch (e) {
-        console.error("Failed to save reading time:", e);
-      }
-    }
-    readingStartTime = null;
-    currentBookId = null;
-  }
-}
 let db = null;
 function getDb() {
   if (!db) {
@@ -871,6 +730,24 @@ function migrateDatabase() {
       CREATE INDEX idx_stats_date ON reading_stats(date);
       CREATE UNIQUE INDEX idx_stats_book_date ON reading_stats(bookId, date);
     `);
+  } else {
+    const statsColumns = database.prepare("PRAGMA table_info(reading_stats)").all();
+    const statsColumnNames = statsColumns.map((c) => c.name);
+    if (!statsColumnNames.includes("readTime")) {
+      database.exec("ALTER TABLE reading_stats ADD COLUMN readTime INTEGER DEFAULT 0");
+    }
+    if (!statsColumnNames.includes("readPages")) {
+      database.exec("ALTER TABLE reading_stats ADD COLUMN readPages INTEGER DEFAULT 0");
+    }
+    if (!statsColumnNames.includes("readCharacters")) {
+      database.exec("ALTER TABLE reading_stats ADD COLUMN readCharacters INTEGER DEFAULT 0");
+    }
+    if (!statsColumnNames.includes("readingSpeed")) {
+      database.exec("ALTER TABLE reading_stats ADD COLUMN readingSpeed INTEGER DEFAULT 0");
+    }
+    if (!statsColumnNames.includes("createdAt")) {
+      database.exec("ALTER TABLE reading_stats ADD COLUMN createdAt INTEGER");
+    }
   }
   if (!tableNames.includes("reading_goals")) {
     database.exec(`
@@ -885,6 +762,26 @@ function migrateDatabase() {
       );
     `);
     insertDefaultReadingGoal();
+  } else {
+    const goalColumns = database.prepare("PRAGMA table_info(reading_goals)").all();
+    const goalColumnNames = goalColumns.map((c) => c.name);
+    const hasLegacyColumns = goalColumnNames.includes("type");
+    const hasNewColumns = goalColumnNames.includes("dailyTarget") && goalColumnNames.includes("targetUnit");
+    if (hasLegacyColumns || !hasNewColumns) {
+      database.exec("DROP TABLE reading_goals");
+      database.exec(`
+        CREATE TABLE reading_goals (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          dailyTarget INTEGER NOT NULL DEFAULT 30,
+          targetUnit TEXT NOT NULL DEFAULT 'minutes',
+          startDate INTEGER NOT NULL,
+          endDate INTEGER,
+          isActive INTEGER NOT NULL DEFAULT 1,
+          createdAt INTEGER NOT NULL
+        );
+      `);
+      insertDefaultReadingGoal();
+    }
   }
 }
 function insertDefaultCategory() {
@@ -1286,6 +1183,146 @@ const goalDb = {
     };
   }
 };
+let mainWindow = null;
+let readingStartTime = null;
+let currentBookId = null;
+function getWindowBounds() {
+  const config = getConfig();
+  const { workArea } = electron.screen.getPrimaryDisplay();
+  let width = config.windowWidth || Math.min(1200, workArea.width - 100);
+  let height = config.windowHeight || Math.min(800, workArea.height - 100);
+  let x = config.windowX;
+  let y = config.windowY;
+  if (x === null || y === null) {
+    x = workArea.x + Math.floor((workArea.width - width) / 2);
+    y = workArea.y + Math.floor((workArea.height - height) / 2);
+  }
+  const display = electron.screen.getDisplayMatching({ x, y, width, height });
+  const displayWorkArea = display.workArea;
+  if (x < displayWorkArea.x) x = displayWorkArea.x;
+  if (y < displayWorkArea.y) y = displayWorkArea.y;
+  if (x + width > displayWorkArea.x + displayWorkArea.width) {
+    x = displayWorkArea.x + displayWorkArea.width - width;
+  }
+  if (y + height > displayWorkArea.y + displayWorkArea.height) {
+    y = displayWorkArea.y + displayWorkArea.height - height;
+  }
+  return { width, height, x, y };
+}
+function createWindow() {
+  const config = getConfig();
+  const bounds = getWindowBounds();
+  mainWindow = new electron.BrowserWindow({
+    width: bounds.width,
+    height: bounds.height,
+    x: bounds.x,
+    y: bounds.y,
+    minWidth: 900,
+    minHeight: 600,
+    show: false,
+    autoHideMenuBar: true,
+    backgroundColor: "#ffffff",
+    webPreferences: {
+      preload: path.join(__dirname, "../preload/index.js"),
+      sandbox: false,
+      contextIsolation: true,
+      nodeIntegration: false,
+      webSecurity: false
+    }
+  });
+  if (config.isMaximized) {
+    mainWindow.maximize();
+  }
+  if (config.startFullscreen) {
+    mainWindow.setFullScreen(true);
+  }
+  if (config.isAlwaysOnTop) {
+    mainWindow.setAlwaysOnTop(true, "floating");
+  }
+  mainWindow.on("ready-to-show", () => {
+    if (config.startMinimized) {
+      mainWindow == null ? void 0 : mainWindow.minimize();
+    } else {
+      mainWindow == null ? void 0 : mainWindow.show();
+    }
+  });
+  mainWindow.on("resize", () => {
+    if (!mainWindow) return;
+    const isMaximized = mainWindow.isMaximized();
+    if (!isMaximized) {
+      const bounds2 = mainWindow.getBounds();
+      updateConfig({
+        windowWidth: bounds2.width,
+        windowHeight: bounds2.height,
+        isMaximized: false
+      });
+    } else {
+      updateConfig({ isMaximized: true });
+    }
+  });
+  mainWindow.on("move", () => {
+    if (!mainWindow || mainWindow.isMaximized()) return;
+    const bounds2 = mainWindow.getBounds();
+    updateConfig({
+      windowX: bounds2.x,
+      windowY: bounds2.y
+    });
+  });
+  mainWindow.on("maximize", () => {
+    updateConfig({ isMaximized: true });
+  });
+  mainWindow.on("unmaximize", () => {
+    updateConfig({ isMaximized: false });
+  });
+  mainWindow.on("closed", () => {
+    saveReadingTime();
+    mainWindow = null;
+  });
+  if (process.env.VITE_DEV_SERVER_URL) {
+    mainWindow.loadURL(process.env.VITE_DEV_SERVER_URL);
+    mainWindow.webContents.openDevTools();
+  } else {
+    mainWindow.loadFile(path.join(__dirname, "../dist/index.html"));
+  }
+  return mainWindow;
+}
+function toggleFullscreen() {
+  if (!mainWindow) return false;
+  const willBeFullscreen = !mainWindow.isFullScreen();
+  mainWindow.setFullScreen(willBeFullscreen);
+  return willBeFullscreen;
+}
+function toggleAlwaysOnTop() {
+  if (!mainWindow) return false;
+  const willBeOnTop = !mainWindow.isAlwaysOnTop();
+  mainWindow.setAlwaysOnTop(willBeOnTop, "floating");
+  updateConfig({ isAlwaysOnTop: willBeOnTop });
+  return willBeOnTop;
+}
+function isAlwaysOnTop() {
+  return (mainWindow == null ? void 0 : mainWindow.isAlwaysOnTop()) ?? false;
+}
+function isFullscreen() {
+  return (mainWindow == null ? void 0 : mainWindow.isFullScreen()) ?? false;
+}
+function setReadingStart(bookId) {
+  currentBookId = bookId;
+  readingStartTime = Date.now();
+}
+function saveReadingTime() {
+  if (currentBookId !== null && readingStartTime !== null) {
+    const duration = Date.now() - readingStartTime;
+    if (duration > 1e3) {
+      try {
+        bookDb.addReadingTime(currentBookId, Math.floor(duration / 1e3));
+      } catch (e) {
+        console.error("Failed to save reading time:", e);
+      }
+    }
+    readingStartTime = null;
+    currentBookId = null;
+  }
+}
 const SUPPORTED_EXTENSIONS = [".txt", ".epub", ".pdf", ".chm"];
 function isSupportedFile(filePath) {
   const ext = path.extname(filePath).toLowerCase();

@@ -31,7 +31,9 @@ import {
   Food,
   Collection,
   Coffee,
-  Cherry
+  Cherry,
+  Sunny,
+  MoonNight
 } from '@element-plus/icons-vue'
 import type { ShortcutConfig, ThemeTemplate, ReadingGoal } from '@/types'
 

@@ -1,6 +1,7 @@
 import { app, BrowserWindow, screen } from 'electron'
 import { join } from 'path'
 import { getConfig, updateConfig } from './config'
+import { bookDb } from './db'
 
 let mainWindow: BrowserWindow | null = null
 let readingStartTime: number | null = null
@@ -173,7 +174,6 @@ export function saveReadingTime() {
     const duration = Date.now() - readingStartTime
     if (duration > 1000) {
       try {
-        const { bookDb } = require('./db')
         bookDb.addReadingTime(currentBookId, Math.floor(duration / 1000))
       } catch (e) {
         console.error('Failed to save reading time:', e)

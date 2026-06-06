@@ -312,7 +312,9 @@ async function handleChapterClick(chapterIndex: number) {
 async function handleAddBookmark() {
   if (!readerStore.currentContent) return
   await readerStore.addBookmark(readerStore.currentContent)
-  ElMessage.success('已添加书签')
+  readerStore.showSidebar = true
+  readerStore.sidebarTab = 'bookmarks'
+  ElMessage.success('已添加书签，已在左侧书签列表中查看')
 }
 
 async function handleDeleteBookmark(bookmark: BookmarkType) {
@@ -749,8 +751,8 @@ watch(
           <el-button circle :icon="DataLine" @click="readerStore.showSidebar = true; readerStore.sidebarTab = 'stats'" title="阅读统计" />
           <el-button circle :icon="Search" @click="showSearchBar = true; nextTick(() => document.getElementById('search-input')?.focus())" />
           <el-button circle :icon="MenuIcon" @click="showToolsPanel = !showToolsPanel" />
-          <el-button circle :icon="List" @click="readerStore.showSidebar = !readerStore.showSidebar" />
-          <el-button circle :icon="Star" @click="handleAddBookmark" />
+          <el-button circle :icon="List" @click="readerStore.showSidebar = !readerStore.showSidebar" title="章节目录/书签" />
+          <el-button circle :icon="Star" @click="handleAddBookmark" title="添加书签" />
           <el-button
             circle
             :icon="configStore.isAlwaysOnTop ? Lock : Unlock"

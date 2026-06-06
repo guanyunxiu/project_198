@@ -164,6 +164,25 @@ function migrateDatabase(): void {
       CREATE INDEX idx_stats_date ON reading_stats(date);
       CREATE UNIQUE INDEX idx_stats_book_date ON reading_stats(bookId, date);
     `)
+  } else {
+    const statsColumns = database.prepare("PRAGMA table_info(reading_stats)").all() as { name: string }[]
+    const statsColumnNames = statsColumns.map(c => c.name)
+    
+    if (!statsColumnNames.includes('readTime')) {
+      database.exec('ALTER TABLE reading_stats ADD COLUMN readTime INTEGER DEFAULT 0')
+    }
+    if (!statsColumnNames.includes('readPages')) {
+      database.exec('ALTER TABLE reading_stats ADD COLUMN readPages INTEGER DEFAULT 0')
+    }
+    if (!statsColumnNames.includes('readCharacters')) {
+      database.exec('ALTER TABLE reading_stats ADD COLUMN readCharacters INTEGER DEFAULT 0')
+    }
+    if (!statsColumnNames.includes('readingSpeed')) {
+      database.exec('ALTER TABLE reading_stats ADD COLUMN readingSpeed INTEGER DEFAULT 0')
+    }
+    if (!statsColumnNames.includes('createdAt')) {
+      database.exec('ALTER TABLE reading_stats ADD COLUMN createdAt INTEGER')
+    }
   }
 
   if (!tableNames.includes('reading_goals')) {
@@ -179,6 +198,28 @@ function migrateDatabase(): void {
       );
     `)
     insertDefaultReadingGoal()
+  } else {
+    const goalColumns = database.prepare("PRAGMA table_info(reading_goals)").all() as { name: string }[]
+    const goalColumnNames = goalColumns.map(c => c.name)
+    
+    const hasLegacyColumns = goalColumnNames.includes('type')
+    const hasNewColumns = goalColumnNames.includes('dailyTarget') && goalColumnNames.includes('targetUnit')
+    
+    if (hasLegacyColumns || !hasNewColumns) {
+      database.exec('DROP TABLE reading_goals')
+      database.exec(`
+        CREATE TABLE reading_goals (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          dailyTarget INTEGER NOT NULL DEFAULT 30,
+          targetUnit TEXT NOT NULL DEFAULT 'minutes',
+          startDate INTEGER NOT NULL,
+          endDate INTEGER,
+          isActive INTEGER NOT NULL DEFAULT 1,
+          createdAt INTEGER NOT NULL
+        );
+      `)
+      insertDefaultReadingGoal()
+    }
   }
 }
 
