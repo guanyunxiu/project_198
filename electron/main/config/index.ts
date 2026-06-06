@@ -1,7 +1,8 @@
 import { app } from 'electron'
 import { join } from 'path'
 import { existsSync, writeFileSync, readFileSync } from 'fs'
-import type { AppConfig, ReadingConfig, ShortcutConfig } from '../types'
+import type { AppConfig, ReadingConfig, ShortcutConfig, ThemeTemplate } from '../types'
+import { getThemeTemplates } from '../utils/smartTextProcessor'
 
 const defaultShortcuts: ShortcutConfig = {
   nextPage: 'ArrowRight',
@@ -12,7 +13,8 @@ const defaultShortcuts: ShortcutConfig = {
   toggleTheme: 't',
   toggleAlwaysOnTop: 'p',
   search: 'Ctrl+f',
-  toggleSidebar: 's'
+  toggleSidebar: 's',
+  toggleAutoFlip: 'a'
 }
 
 const defaultReadingConfig: ReadingConfig = {
@@ -24,12 +26,16 @@ const defaultReadingConfig: ReadingConfig = {
   readMode: 'scroll',
   pageChars: 800,
   highlightColor: '#ffe066',
-  backgroundOpacity: 100,
-  fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',
+  backgroundImage: null,
+  customFont: null,
+  customFontPath: null,
   pageLayout: 'single',
   orientation: 'portrait',
-  autoTurnSpeed: 30,
-  autoTurnEnabled: false
+  opacity: 100,
+  autoFlipEnabled: false,
+  autoFlipSpeed: 1,
+  autoFlipInterval: 30,
+  themeTemplate: 'light'
 }
 
 const defaultConfig: AppConfig = {
@@ -48,14 +54,7 @@ const defaultConfig: AppConfig = {
   startFullscreen: false,
   startMinimized: false,
   shortcuts: defaultShortcuts,
-  readingConfig: defaultReadingConfig,
-  customThemes: [],
-  customFonts: [],
-  dailyReadingGoal: 30,
-  weeklyReadingGoal: 180,
-  enableSmartChapterDetection: true,
-  enableAutoCleanText: true,
-  enableGarbledFix: true
+  readingConfig: defaultReadingConfig
 }
 
 let configPath: string
@@ -72,9 +71,7 @@ export function initConfig(): void {
         ...defaultConfig,
         ...saved,
         shortcuts: { ...defaultShortcuts, ...saved.shortcuts },
-        readingConfig: { ...defaultReadingConfig, ...saved.readingConfig },
-        customThemes: saved.customThemes || [],
-        customFonts: saved.customFonts || []
+        readingConfig: { ...defaultReadingConfig, ...saved.readingConfig }
       }
     } catch {
       currentConfig = { ...defaultConfig }
@@ -138,4 +135,18 @@ export function addFavoritePath(path: string): void {
 export function removeFavoritePath(path: string): void {
   currentConfig.favoritePaths = currentConfig.favoritePaths.filter(p => p !== path)
   saveConfig()
+}
+
+export function getThemeTemplatesList(): ThemeTemplate[] {
+  return getThemeTemplates()
+}
+
+export function applyThemeTemplate(templateId: string): void {
+  const templates = getThemeTemplates()
+  const template = templates.find(t => t.id === templateId)
+  
+  if (template) {
+    currentConfig.readingConfig.themeTemplate = templateId
+    saveConfig()
+  }
 }

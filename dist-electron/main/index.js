@@ -5,6 +5,456 @@ const fs = require("fs");
 const Database = require("better-sqlite3");
 const iconv = require("iconv-lite");
 const jschardet = require("jschardet");
+const GARBLED_PATTERNS = [
+  /[亜唖娃阿哀愛挨姶葵逢穐悪握渥旭葦芦鯵梓圧斡扱宛姐虻飴絢綾鮎或粟袷安庵按暗案闇鞍杏以伊位依偉囲夷委威尉惟意慰易椅為畏異移維緯胃萎衣謂違遺医井亥域育郁磯一壱溢逸稲茨芋鰯允印咽員因姻引飲淫胤蔭]/,
+  /[\uFFFD\u0080-\u009F]/,
+  /[?]{3,}/
+];
+const AUTHOR_PATTERNS = [
+  /(?:作者|著|作|書|撰)[：:]\s*([^\n\r]+)/i,
+  /(?:作者|著者|作者：|作者:)\s*([^\n\r，。、；\n]+)/i,
+  /^([^\n\r]{2,20})\s*[著|作|編]$/m,
+  /(?:by|作者)\s+([A-Za-z\u4e00-\u9fa5]{2,30})/i
+];
+const TAG_KEYWORDS = {
+  玄幻: ["玄幻", "奇幻", "魔法", "斗气", "修真", "修仙", "仙俠", "武俠", "武道"],
+  都市: ["都市", "現代", "職場", "商業", "娛樂", "明星", "醫生", "老師"],
+  言情: ["言情", "愛情", "戀愛", "婚寵", "總裁", "甜寵", "虐戀", "青春"],
+  科幻: ["科幻", "未來", "星際", "太空", "機甲", "末世", "賽博", "蒸汽"],
+  歷史: ["歷史", "古代", "穿越", "重生", "明朝", "唐朝", "三國", "抗戰"],
+  懸疑: ["懸疑", "推理", "偵探", "恐怖", "靈異", "鬼", "殭屍", "盜墓"],
+  遊戲: ["遊戲", "電競", "網遊", "虛擬", "吃雞", "王者", "聯盟"],
+  體育: ["體育", "籃球", "足球", "網球", "田徑", "奧運", "競技"]
+};
+const COMMON_GARBLED_CHARS = {
+  "鈥": "“",
+  "樎": "”",
+  "鈥檚": "'s",
+  "鈥檙": "’",
+  "鈥楾": "‘",
+  "鈥旀": "–",
+  "鈥斺": "—",
+  "鈥橽": "…",
+  "锘": "",
+  "Ã©": "é",
+  "Ã¨": "è",
+  "Ã ": "à",
+  "Â": ""
+};
+function cleanText(content, options) {
+  let cleaned = content;
+  if (options.fixGarbledText) {
+    cleaned = fixGarbledText(cleaned);
+  }
+  if (options.removeEmptyLines) {
+    cleaned = removeEmptyLines(cleaned);
+  }
+  if (options.removeExtraSpaces) {
+    cleaned = removeExtraSpaces(cleaned);
+  }
+  if (options.normalizePunctuation) {
+    cleaned = normalizePunctuation(cleaned);
+  }
+  return cleaned;
+}
+function fixGarbledText(content) {
+  let fixed = content;
+  for (const [garbled, correct] of Object.entries(COMMON_GARBLED_CHARS)) {
+    fixed = fixed.replace(new RegExp(garbled, "g"), correct);
+  }
+  fixed = fixed.replace(/[\uFFFD]/g, "");
+  fixed = fixed.replace(/[?]{2,}/g, "?");
+  fixed = fixed.replace(/[!]{2,}/g, "!");
+  return fixed;
+}
+function removeEmptyLines(content) {
+  return content.replace(/\r\n/g, "\n").replace(/\n{3,}/g, "\n\n").replace(/^[ \t]+$/gm, "").replace(/^\n+|\n+$/g, "");
+}
+function removeExtraSpaces(content) {
+  return content.replace(/[ \t]{2,}/g, " ").replace(/^[ \t]+|[ \t]+$/gm, "");
+}
+function normalizePunctuation(content) {
+  return content.replace(/，/g, "，").replace(/。/g, "。").replace(/！/g, "！").replace(/？/g, "？").replace(/：/g, "：").replace(/；/g, "；").replace(/（/g, "（").replace(/）/g, "）").replace(/【/g, "【").replace(/】/g, "】");
+}
+function detectDuplicateChapters(chapters) {
+  const duplicates = [];
+  const titleMap = /* @__PURE__ */ new Map();
+  chapters.forEach((chapter, index) => {
+    const normalizedTitle = normalizeTitle(chapter.title);
+    if (titleMap.has(normalizedTitle)) {
+      titleMap.get(normalizedTitle).push(index);
+    } else {
+      titleMap.set(normalizedTitle, [index]);
+    }
+  });
+  titleMap.forEach((indices) => {
+    if (indices.length > 1) {
+      duplicates.push(...indices.slice(1));
+    }
+  });
+  return duplicates.sort((a, b) => b - a);
+}
+function removeDuplicateChapters(content, chapters) {
+  const duplicateIndices = detectDuplicateChapters(chapters);
+  if (duplicateIndices.length === 0) {
+    return { content, chapters };
+  }
+  let newContent = content;
+  const newChapters = [...chapters];
+  for (const index of duplicateIndices) {
+    const chapter = newChapters[index];
+    const chapterContent = newContent.slice(chapter.startPosition, chapter.endPosition);
+    newContent = newContent.replace(chapterContent, "");
+    const lengthDiff = chapter.endPosition - chapter.startPosition;
+    for (let i = index + 1; i < newChapters.length; i++) {
+      newChapters[i].startPosition -= lengthDiff;
+      newChapters[i].endPosition -= lengthDiff;
+    }
+    newChapters.splice(index, 1);
+  }
+  newChapters.forEach((chapter, index) => {
+    chapter.index = index;
+  });
+  return { content: newContent, chapters: newChapters };
+}
+function normalizeTitle(title) {
+  return title.toLowerCase().replace(/[\s\-_【\[\]（）()《》<>""''`]/g, "").replace(/第[一二三四五六七八九十百千零\d]+/g, "第N").replace(/chapter\s*\d+/gi, "chapterN").replace(/[^\u4e00-\u9fa5a-z0-9]/g, "");
+}
+const SMART_CHAPTER_PATTERNS = [
+  /^第[一二三四五六七八九十百千零\d]+[章节卷部篇回][\s、．。：:].*$/m,
+  /^Chapter\s+\d+.*$/im,
+  /^CH\.?\s*\d+.*$/im,
+  /^\d+\s*[.、\-)\]】]\s*.+$/m,
+  /^[【\[（(]\s*第?[一二三四五六七八九十百千零\d]+\s*[章节卷部篇回]?\s*[】\]）)].*$/m,
+  /^楔子|^序章|^序言|^前言|^後記|^番外|^引子|^尾聲|^附錄|^完結|^結局/m,
+  /^(?:上|下|前|後|正|續)篇.*$/m,
+  /^[一二三四五六七八九十]+[、.\s].*$/m,
+  /^VOL\.?\s*\d+.*$/im,
+  /^BOOK\s+\d+.*$/im,
+  /^ACT\s+\d+.*$/im,
+  /^SCENE\s+\d+.*$/im
+];
+const SENTENCE_END_PATTERNS = [
+  /[。！？!?…]/g,
+  /[.?!]\s+/g,
+  /\n{2,}/g
+];
+function smartExtractChapters(content, options) {
+  const chapters = [];
+  let chapterIndex = 0;
+  const introContent = findIntroContent(content);
+  if (introContent.length > 0) {
+    chapters.push({
+      index: 0,
+      title: "引言",
+      startPosition: 0,
+      endPosition: introContent.length,
+      startPage: 0,
+      wordCount: introContent.length
+    });
+    chapterIndex = 1;
+  }
+  const matches = findAllChapterMatches(content);
+  let lastEndPos = chapters.length > 0 ? chapters[0].endPosition : 0;
+  matches.forEach((match) => {
+    if (match.position < lastEndPos) return;
+    if (chapters.length > 0) {
+      chapters[chapters.length - 1].endPosition = match.position;
+      chapters[chapters.length - 1].wordCount = chapters[chapters.length - 1].endPosition - chapters[chapters.length - 1].startPosition;
+    }
+    const title = cleanChapterTitle(match.title);
+    if (title.length === 0) return;
+    chapters.push({
+      index: chapterIndex++,
+      title,
+      startPosition: match.position,
+      endPosition: content.length,
+      startPage: 0,
+      wordCount: 0
+    });
+    lastEndPos = match.position;
+  });
+  if (chapters.length > 0) {
+    chapters[chapters.length - 1].endPosition = content.length;
+    chapters[chapters.length - 1].wordCount = chapters[chapters.length - 1].endPosition - chapters[chapters.length - 1].startPosition;
+  }
+  if (options.mergeShortChapters) {
+    return mergeShortChapters(chapters, options.minChapterLength || 500);
+  }
+  return chapters;
+}
+function findIntroContent(content) {
+  const firstMatch = findFirstChapterMatch(content);
+  if (firstMatch === -1) return "";
+  const intro = content.slice(0, firstMatch).trim();
+  return intro.length < 5e3 ? intro : "";
+}
+function findFirstChapterMatch(content) {
+  let earliestPos = Infinity;
+  for (const pattern of SMART_CHAPTER_PATTERNS) {
+    const match = content.match(pattern);
+    if (match && match.index !== void 0 && match.index < earliestPos) {
+      earliestPos = match.index;
+    }
+  }
+  return earliestPos === Infinity ? -1 : earliestPos;
+}
+function findAllChapterMatches(content) {
+  const matches = [];
+  const foundPositions = /* @__PURE__ */ new Set();
+  for (const pattern of SMART_CHAPTER_PATTERNS) {
+    const regex = new RegExp(pattern.source, "gm");
+    let match;
+    while ((match = regex.exec(content)) !== null) {
+      const pos = match.index;
+      const title = match[0].trim();
+      if (!foundPositions.has(pos) && isValidChapterTitle(title, content, pos)) {
+        foundPositions.add(pos);
+        matches.push({ title, position: pos });
+      }
+    }
+  }
+  return matches.sort((a, b) => a.position - b.position);
+}
+function isValidChapterTitle(title, content, position) {
+  if (title.length > 100 || title.length < 2) return false;
+  if (position > 0) {
+    const prevChar = content[position - 1];
+    if (prevChar && prevChar !== "\n" && prevChar !== "\r" && prevChar !== " " && prevChar !== "	") {
+      return false;
+    }
+  }
+  const lineStart = content.lastIndexOf("\n", position) + 1;
+  const lineEnd = content.indexOf("\n", position);
+  const lineContent = content.slice(lineStart, lineEnd === -1 ? content.length : lineEnd).trim();
+  if (lineContent !== title) return false;
+  const lowerTitle = title.toLowerCase();
+  if (lowerTitle.includes("第") && lowerTitle.includes("章")) {
+    return true;
+  }
+  if (/^chapter\s+\d+/i.test(title)) {
+    return true;
+  }
+  if (/^\d+\s*[.、]/.test(title)) {
+    return true;
+  }
+  if (/^[【\[（(]/.test(title)) {
+    return true;
+  }
+  return false;
+}
+function cleanChapterTitle(title) {
+  return title.replace(/^[\s\u3000]+|[\s\u3000]+$/g, "").replace(/[\r\n]+/g, "").replace(/\s{2,}/g, " ");
+}
+function mergeShortChapters(chapters, minLength) {
+  if (chapters.length <= 1) return chapters;
+  const merged = [];
+  let i = 0;
+  while (i < chapters.length) {
+    let current = { ...chapters[i] };
+    while (i + 1 < chapters.length && current.wordCount < minLength && chapters[i + 1].wordCount < minLength) {
+      const next = chapters[i + 1];
+      current.title = `${current.title} · ${next.title}`;
+      current.endPosition = next.endPosition;
+      current.wordCount = current.endPosition - current.startPosition;
+      i++;
+    }
+    merged.push(current);
+    i++;
+  }
+  merged.forEach((chapter, index) => {
+    chapter.index = index;
+  });
+  return merged;
+}
+function extractSentences(content) {
+  const sentences = [];
+  let lastIndex = 0;
+  const combinedPattern = new RegExp(
+    SENTENCE_END_PATTERNS.map((p) => p.source).join("|"),
+    "g"
+  );
+  let match;
+  while ((match = combinedPattern.exec(content)) !== null) {
+    const sentence = content.slice(lastIndex, match.index + match[0].length).trim();
+    if (sentence.length > 0) {
+      sentences.push(sentence);
+    }
+    lastIndex = match.index + match[0].length;
+  }
+  const remaining = content.slice(lastIndex).trim();
+  if (remaining.length > 0) {
+    sentences.push(remaining);
+  }
+  return sentences;
+}
+function extractMetadata(content, title) {
+  const first2000Chars = content.slice(0, 2e3);
+  const last1000Chars = content.slice(-1e3);
+  const author = detectAuthor(first2000Chars) || detectAuthor(last1000Chars) || "未知";
+  const summary = generateSummary(content);
+  const tags = detectTags(content, title);
+  const chapterMatches = content.match(/第[一二三四五六七八九十百千零\d]+章/g) || [];
+  const chapterCount = Math.max(
+    chapterMatches.length,
+    (content.match(/^第[一二三四五六七八九十百千零\d]+章/gm) || []).length
+  );
+  return {
+    title,
+    author,
+    summary,
+    tags,
+    wordCount: content.length,
+    chapterCount
+  };
+}
+function detectAuthor(text) {
+  for (const pattern of AUTHOR_PATTERNS) {
+    const match = text.match(pattern);
+    if (match && match[1]) {
+      const author = match[1].trim().replace(/[作者|著|作|：:]/g, "").trim();
+      if (author.length >= 2 && author.length <= 30) {
+        return author;
+      }
+    }
+  }
+  return null;
+}
+function generateSummary(content, title) {
+  const sentences = extractSentences(content.slice(0, 5e3));
+  let summary = "";
+  for (const sentence of sentences) {
+    if (sentence.length > 10 && sentence.length < 200) {
+      summary += sentence + " ";
+      if (summary.length >= 300) break;
+    }
+  }
+  if (summary.length < 50) {
+    const firstParagraph = content.split("\n\n")[0] || content.split("\n")[0];
+    summary = firstParagraph.slice(0, 300);
+  }
+  return summary.trim().slice(0, 300);
+}
+function detectTags(content, title) {
+  const tags = [];
+  const combinedText = (content.slice(0, 1e4) + " " + title).toLowerCase();
+  for (const [tag, keywords] of Object.entries(TAG_KEYWORDS)) {
+    for (const keyword of keywords) {
+      if (combinedText.includes(keyword.toLowerCase())) {
+        tags.push(tag);
+        break;
+      }
+    }
+  }
+  if (tags.length === 0) {
+    tags.push("其他");
+  }
+  return tags.slice(0, 5);
+}
+function getThemeTemplates() {
+  return [
+    {
+      id: "light",
+      name: "日间模式",
+      bgColor: "#fdfbf7",
+      textColor: "#333333",
+      accentColor: "#409eff",
+      secondaryBg: "#f5f5f5",
+      borderColor: "#e4e7ed",
+      preview: "#fdfbf7"
+    },
+    {
+      id: "dark",
+      name: "夜间模式",
+      bgColor: "#1a1a2e",
+      textColor: "#e0e0e0",
+      accentColor: "#409eff",
+      secondaryBg: "#2d2d44",
+      borderColor: "#3d3d5c",
+      preview: "#1a1a2e"
+    },
+    {
+      id: "eye",
+      name: "护眼模式",
+      bgColor: "#c7edcc",
+      textColor: "#333333",
+      accentColor: "#52c41a",
+      secondaryBg: "#d4f0d8",
+      borderColor: "#b3dcc0",
+      preview: "#c7edcc"
+    },
+    {
+      id: "paper",
+      name: "羊皮纸",
+      bgColor: "#f4e4bc",
+      textColor: "#5c4033",
+      accentColor: "#8b4513",
+      secondaryBg: "#efe0b5",
+      borderColor: "#d4c4a0",
+      preview: "#f4e4bc"
+    },
+    {
+      id: "ocean",
+      name: "海洋蓝",
+      bgColor: "#e6f3ff",
+      textColor: "#1e3a5f",
+      accentColor: "#1890ff",
+      secondaryBg: "#d6e8fa",
+      borderColor: "#91caff",
+      preview: "#e6f3ff"
+    },
+    {
+      id: "forest",
+      name: "森林绿",
+      bgColor: "#e8f5e9",
+      textColor: "#1b5e20",
+      accentColor: "#4caf50",
+      secondaryBg: "#c8e6c9",
+      borderColor: "#a5d6a7",
+      preview: "#e8f5e9"
+    },
+    {
+      id: "sunset",
+      name: "日落橙",
+      bgColor: "#fff3e0",
+      textColor: "#bf360c",
+      accentColor: "#ff9800",
+      secondaryBg: "#ffe0b2",
+      borderColor: "#ffcc80",
+      preview: "#fff3e0"
+    },
+    {
+      id: "lavender",
+      name: "薰衣草",
+      bgColor: "#f3e5f5",
+      textColor: "#4a148c",
+      accentColor: "#9c27b0",
+      secondaryBg: "#e1bee7",
+      borderColor: "#ce93d8",
+      preview: "#f3e5f5"
+    }
+  ];
+}
+function analyzeTextQuality(content) {
+  const lines = content.split("\n");
+  const emptyLines = lines.filter((l) => l.trim().length === 0).length;
+  const nonEmptyLines = lines.filter((l) => l.trim().length > 0);
+  const avgLineLength = nonEmptyLines.length > 0 ? nonEmptyLines.reduce((sum, l) => sum + l.length, 0) / nonEmptyLines.length : 0;
+  let garbledCount = 0;
+  for (const pattern of GARBLED_PATTERNS) {
+    const matches = content.match(pattern);
+    if (matches) {
+      garbledCount += matches.length;
+    }
+  }
+  return {
+    hasGarbled: garbledCount > 5,
+    garbledCount,
+    emptyLineRatio: lines.length > 0 ? emptyLines / lines.length : 0,
+    avgLineLength,
+    totalLines: lines.length
+  };
+}
 const defaultShortcuts = {
   nextPage: "ArrowRight",
   prevPage: "ArrowLeft",
@@ -14,7 +464,8 @@ const defaultShortcuts = {
   toggleTheme: "t",
   toggleAlwaysOnTop: "p",
   search: "Ctrl+f",
-  toggleSidebar: "s"
+  toggleSidebar: "s",
+  toggleAutoFlip: "a"
 };
 const defaultReadingConfig = {
   fontSize: 18,
@@ -25,12 +476,16 @@ const defaultReadingConfig = {
   readMode: "scroll",
   pageChars: 800,
   highlightColor: "#ffe066",
-  backgroundOpacity: 100,
-  fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',
+  backgroundImage: null,
+  customFont: null,
+  customFontPath: null,
   pageLayout: "single",
   orientation: "portrait",
-  autoTurnSpeed: 30,
-  autoTurnEnabled: false
+  opacity: 100,
+  autoFlipEnabled: false,
+  autoFlipSpeed: 1,
+  autoFlipInterval: 30,
+  themeTemplate: "light"
 };
 const defaultConfig = {
   defaultEncoding: "utf-8",
@@ -48,14 +503,7 @@ const defaultConfig = {
   startFullscreen: false,
   startMinimized: false,
   shortcuts: defaultShortcuts,
-  readingConfig: defaultReadingConfig,
-  customThemes: [],
-  customFonts: [],
-  dailyReadingGoal: 30,
-  weeklyReadingGoal: 180,
-  enableSmartChapterDetection: true,
-  enableAutoCleanText: true,
-  enableGarbledFix: true
+  readingConfig: defaultReadingConfig
 };
 let configPath;
 let currentConfig;
@@ -69,9 +517,7 @@ function initConfig() {
         ...defaultConfig,
         ...saved,
         shortcuts: { ...defaultShortcuts, ...saved.shortcuts },
-        readingConfig: { ...defaultReadingConfig, ...saved.readingConfig },
-        customThemes: saved.customThemes || [],
-        customFonts: saved.customFonts || []
+        readingConfig: { ...defaultReadingConfig, ...saved.readingConfig }
       };
     } catch {
       currentConfig = { ...defaultConfig };
@@ -124,6 +570,17 @@ function addFavoritePath(path2) {
 function removeFavoritePath(path2) {
   currentConfig.favoritePaths = currentConfig.favoritePaths.filter((p) => p !== path2);
   saveConfig();
+}
+function getThemeTemplatesList() {
+  return getThemeTemplates();
+}
+function applyThemeTemplate(templateId) {
+  const templates = getThemeTemplates();
+  const template = templates.find((t) => t.id === templateId);
+  if (template) {
+    currentConfig.readingConfig.themeTemplate = templateId;
+    saveConfig();
+  }
 }
 let mainWindow = null;
 let readingStartTime = null;
@@ -286,6 +743,7 @@ function initDatabase() {
   createTables();
   migrateDatabase();
   insertDefaultCategory();
+  insertDefaultReadingGoal();
 }
 function createTables() {
   const database = getDb();
@@ -315,6 +773,7 @@ function createTables() {
       notes TEXT DEFAULT '',
       summary TEXT DEFAULT '',
       tags TEXT DEFAULT '',
+      detectedAuthor TEXT DEFAULT '',
       createdAt INTEGER NOT NULL,
       updatedAt INTEGER NOT NULL,
       FOREIGN KEY (categoryId) REFERENCES categories(id) ON DELETE SET NULL
@@ -346,23 +805,21 @@ function createTables() {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       bookId INTEGER NOT NULL,
       date TEXT NOT NULL,
-      pagesRead INTEGER DEFAULT 0,
-      charactersRead INTEGER DEFAULT 0,
-      readingTime INTEGER DEFAULT 0,
+      readTime INTEGER DEFAULT 0,
+      readPages INTEGER DEFAULT 0,
+      readCharacters INTEGER DEFAULT 0,
+      readingSpeed INTEGER DEFAULT 0,
       createdAt INTEGER NOT NULL,
-      FOREIGN KEY (bookId) REFERENCES books(id) ON DELETE CASCADE,
-      UNIQUE(bookId, date)
+      FOREIGN KEY (bookId) REFERENCES books(id) ON DELETE CASCADE
     );
 
     CREATE TABLE IF NOT EXISTS reading_goals (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      type TEXT NOT NULL,
-      target INTEGER NOT NULL,
-      targetType TEXT NOT NULL,
-      current INTEGER DEFAULT 0,
-      periodStart INTEGER NOT NULL,
-      periodEnd INTEGER NOT NULL,
-      isCompleted INTEGER DEFAULT 0,
+      dailyTarget INTEGER NOT NULL DEFAULT 30,
+      targetUnit TEXT NOT NULL DEFAULT 'minutes',
+      startDate INTEGER NOT NULL,
+      endDate INTEGER,
+      isActive INTEGER NOT NULL DEFAULT 1,
       createdAt INTEGER NOT NULL
     );
 
@@ -371,9 +828,9 @@ function createTables() {
     CREATE INDEX IF NOT EXISTS idx_books_lastRead ON books(lastReadTime);
     CREATE INDEX IF NOT EXISTS idx_bookmarks_book ON bookmarks(bookId);
     CREATE INDEX IF NOT EXISTS idx_progress_book ON reading_progress(bookId);
-    CREATE INDEX IF NOT EXISTS idx_stats_date ON reading_stats(date);
     CREATE INDEX IF NOT EXISTS idx_stats_book ON reading_stats(bookId);
-    CREATE INDEX IF NOT EXISTS idx_goals_type ON reading_goals(type);
+    CREATE INDEX IF NOT EXISTS idx_stats_date ON reading_stats(date);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_stats_book_date ON reading_stats(bookId, date);
   `);
 }
 function migrateDatabase() {
@@ -386,6 +843,49 @@ function migrateDatabase() {
   if (!columnNames.includes("notes")) {
     database.exec("ALTER TABLE books ADD COLUMN notes TEXT DEFAULT ''");
   }
+  if (!columnNames.includes("summary")) {
+    database.exec("ALTER TABLE books ADD COLUMN summary TEXT DEFAULT ''");
+  }
+  if (!columnNames.includes("tags")) {
+    database.exec("ALTER TABLE books ADD COLUMN tags TEXT DEFAULT ''");
+  }
+  if (!columnNames.includes("detectedAuthor")) {
+    database.exec("ALTER TABLE books ADD COLUMN detectedAuthor TEXT DEFAULT ''");
+  }
+  const tables = database.prepare("SELECT name FROM sqlite_master WHERE type='table'").all();
+  const tableNames = tables.map((t) => t.name);
+  if (!tableNames.includes("reading_stats")) {
+    database.exec(`
+      CREATE TABLE reading_stats (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        bookId INTEGER NOT NULL,
+        date TEXT NOT NULL,
+        readTime INTEGER DEFAULT 0,
+        readPages INTEGER DEFAULT 0,
+        readCharacters INTEGER DEFAULT 0,
+        readingSpeed INTEGER DEFAULT 0,
+        createdAt INTEGER NOT NULL,
+        FOREIGN KEY (bookId) REFERENCES books(id) ON DELETE CASCADE
+      );
+      CREATE INDEX idx_stats_book ON reading_stats(bookId);
+      CREATE INDEX idx_stats_date ON reading_stats(date);
+      CREATE UNIQUE INDEX idx_stats_book_date ON reading_stats(bookId, date);
+    `);
+  }
+  if (!tableNames.includes("reading_goals")) {
+    database.exec(`
+      CREATE TABLE reading_goals (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        dailyTarget INTEGER NOT NULL DEFAULT 30,
+        targetUnit TEXT NOT NULL DEFAULT 'minutes',
+        startDate INTEGER NOT NULL,
+        endDate INTEGER,
+        isActive INTEGER NOT NULL DEFAULT 1,
+        createdAt INTEGER NOT NULL
+      );
+    `);
+    insertDefaultReadingGoal();
+  }
 }
 function insertDefaultCategory() {
   const database = getDb();
@@ -394,6 +894,17 @@ function insertDefaultCategory() {
     "INSERT OR IGNORE INTO categories (name, createdAt) VALUES (?, ?)"
   );
   stmt.run("未分类", now);
+}
+function insertDefaultReadingGoal() {
+  const database = getDb();
+  const count = database.prepare("SELECT COUNT(*) as count FROM reading_goals").get();
+  if (count.count === 0) {
+    const now = Date.now();
+    database.prepare(`
+      INSERT INTO reading_goals (dailyTarget, targetUnit, startDate, isActive, createdAt)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(30, "minutes", now, 1, now);
+  }
 }
 const categoryDb = {
   getAll() {
@@ -431,8 +942,9 @@ const bookDb = {
         title, author, filePath, fileType, coverPath, encoding,
         totalPages, totalCharacters, categoryId, isPinned,
         lastReadPage, lastReadPosition, lastReadTime, totalReadingTime, notes,
+        summary, tags, detectedAuthor,
         createdAt, updatedAt
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const result = stmt.run(
       book.title,
@@ -450,6 +962,9 @@ const bookDb = {
       book.lastReadTime,
       book.totalReadingTime || 0,
       book.notes || "",
+      book.summary || "",
+      book.tags || "",
+      book.detectedAuthor || "",
       now,
       now
     );
@@ -471,6 +986,28 @@ const bookDb = {
   },
   addReadingTime(bookId, duration) {
     getDb().prepare("UPDATE books SET totalReadingTime = COALESCE(totalReadingTime, 0) + ?, updatedAt = ? WHERE id = ?").run(duration, Date.now(), bookId);
+  },
+  updateMetadata(bookId, metadata) {
+    const now = Date.now();
+    const fields = [];
+    const values = [];
+    if (metadata.summary !== void 0) {
+      fields.push("summary = ?");
+      values.push(metadata.summary);
+    }
+    if (metadata.tags !== void 0) {
+      fields.push("tags = ?");
+      values.push(metadata.tags);
+    }
+    if (metadata.detectedAuthor !== void 0) {
+      fields.push("detectedAuthor = ?");
+      values.push(metadata.detectedAuthor);
+    }
+    if (fields.length > 0) {
+      values.push(now, bookId);
+      const stmt = getDb().prepare(`UPDATE books SET ${fields.join(", ")}, updatedAt = ? WHERE id = ?`);
+      stmt.run(...values);
+    }
   },
   togglePin(id) {
     getDb().prepare("UPDATE books SET isPinned = 1 - isPinned, updatedAt = ? WHERE id = ?").run(Date.now(), id);
@@ -531,113 +1068,222 @@ const progressDb = {
   }
 };
 const statsDb = {
-  getByDate(date) {
-    return getDb().prepare("SELECT * FROM reading_stats WHERE date = ? ORDER BY createdAt DESC").all(date);
+  getByBookId(bookId, startDate, endDate) {
+    let sql = "SELECT * FROM reading_stats WHERE bookId = ?";
+    const params = [bookId];
+    if (startDate) {
+      sql += " AND date >= ?";
+      params.push(startDate);
+    }
+    if (endDate) {
+      sql += " AND date <= ?";
+      params.push(endDate);
+    }
+    sql += " ORDER BY date ASC";
+    return getDb().prepare(sql).all(...params);
   },
-  getByBookId(bookId, limit = 30) {
-    return getDb().prepare("SELECT * FROM reading_stats WHERE bookId = ? ORDER BY date DESC LIMIT ?").all(bookId, limit);
-  },
-  getDateRange(startDate, endDate) {
+  getByDateRange(startDate, endDate) {
     return getDb().prepare("SELECT * FROM reading_stats WHERE date >= ? AND date <= ? ORDER BY date ASC").all(startDate, endDate);
   },
-  addReading(bookId, pagesRead, charactersRead, readingTime) {
-    const now = Date.now();
+  getDailyStats(date) {
+    return getDb().prepare("SELECT * FROM reading_stats WHERE date = ?").all(date);
+  },
+  getAverageReadingSpeed(bookId) {
+    let sql = "SELECT AVG(readingSpeed) as avgSpeed FROM reading_stats WHERE readingSpeed > 0";
+    const params = [];
+    if (bookId) {
+      sql += " AND bookId = ?";
+      params.push(bookId);
+    }
+    const result = getDb().prepare(sql).get(...params);
+    return Math.round(result.avgSpeed || 0);
+  },
+  getDailyTotal(date) {
+    const result = getDb().prepare(`
+      SELECT 
+        COALESCE(SUM(readTime), 0) as readTime,
+        COALESCE(SUM(readPages), 0) as readPages,
+        COALESCE(SUM(readCharacters), 0) as readCharacters
+      FROM reading_stats 
+      WHERE date = ?
+    `).get(date);
+    return result;
+  },
+  getDailyAverages(days = 7) {
+    const result = getDb().prepare(`
+      SELECT 
+        COALESCE(AVG(dailyTime), 0) as avgReadTime,
+        COALESCE(AVG(dailyPages), 0) as avgReadPages,
+        COALESCE(AVG(dailyChars), 0) as avgReadCharacters
+      FROM (
+        SELECT 
+          date,
+          SUM(readTime) as dailyTime,
+          SUM(readPages) as dailyPages,
+          SUM(readCharacters) as dailyChars
+        FROM reading_stats
+        WHERE date >= date('now', ?)
+        GROUP BY date
+      )
+    `).get(`-${days} days`);
+    return {
+      avgReadTime: Math.round(result.avgReadTime),
+      avgReadPages: Math.round(result.avgReadPages),
+      avgReadCharacters: Math.round(result.avgReadCharacters)
+    };
+  },
+  recordReadingSession(bookId, readTime, readPages, readCharacters) {
     const date = (/* @__PURE__ */ new Date()).toISOString().split("T")[0];
-    const existing = getDb().prepare("SELECT * FROM reading_stats WHERE bookId = ? AND date = ?").get(bookId, date);
+    const now = Date.now();
+    const readingSpeed = readTime > 0 ? Math.round(readCharacters / readTime * 60) : 0;
+    const existing = getDb().prepare(
+      "SELECT id FROM reading_stats WHERE bookId = ? AND date = ?"
+    ).get(bookId, date);
     if (existing) {
       getDb().prepare(`
-          UPDATE reading_stats 
-          SET pagesRead = pagesRead + ?,
-              charactersRead = charactersRead + ?,
-              readingTime = readingTime + ?,
-              createdAt = ?
-          WHERE bookId = ? AND date = ?
-        `).run(pagesRead, charactersRead, readingTime, now, bookId, date);
-      return existing.id;
+        UPDATE reading_stats 
+        SET 
+          readTime = readTime + ?,
+          readPages = readPages + ?,
+          readCharacters = readCharacters + ?,
+          readingSpeed = ?,
+          createdAt = ?
+        WHERE id = ?
+      `).run(readTime, readPages, readCharacters, readingSpeed, now, existing.id);
     } else {
-      const stmt = getDb().prepare(`
-        INSERT INTO reading_stats (bookId, date, pagesRead, charactersRead, readingTime, createdAt)
-        VALUES (?, ?, ?, ?, ?, ?)
-      `);
-      const result = stmt.run(bookId, date, pagesRead, charactersRead, readingTime, now);
-      return Number(result.lastInsertRowid);
+      getDb().prepare(`
+        INSERT INTO reading_stats (bookId, date, readTime, readPages, readCharacters, readingSpeed, createdAt)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(bookId, date, readTime, readPages, readCharacters, readingSpeed, now);
     }
   },
-  getDailyAverage(days = 7) {
-    const date = /* @__PURE__ */ new Date();
-    date.setDate(date.getDate() - days);
-    const startDate = date.toISOString().split("T")[0];
-    const result = getDb().prepare(`
-        SELECT AVG(readingTime) as avgTime 
-        FROM reading_stats 
-        WHERE date >= ?
-      `).get(startDate);
-    return result.avgTime || 0;
-  },
-  getPagesPerMinute(bookId) {
-    const result = getDb().prepare(`
-        SELECT SUM(pagesRead) as totalPages, SUM(readingTime) as totalTime
-        FROM reading_stats 
-        WHERE bookId = ? AND readingTime > 0
-      `).get(bookId);
-    if (!result.totalPages || !result.totalTime) return 0;
-    return result.totalPages / (result.totalTime / 60);
-  },
-  deleteByBookId(bookId) {
-    getDb().prepare("DELETE FROM reading_stats WHERE bookId = ?").run(bookId);
+  getReadingStreak() {
+    const dates = getDb().prepare(`
+      SELECT DISTINCT date 
+      FROM reading_stats 
+      WHERE readTime > 0
+      ORDER BY date DESC
+    `).all();
+    if (dates.length === 0) return 0;
+    let streak = 0;
+    const today = /* @__PURE__ */ new Date();
+    today.setHours(0, 0, 0, 0);
+    for (let i = 0; i < dates.length; i++) {
+      const checkDate = new Date(today);
+      checkDate.setDate(checkDate.getDate() - i);
+      const checkDateStr = checkDate.toISOString().split("T")[0];
+      if (dates.some((d) => d.date === checkDateStr)) {
+        streak++;
+      } else if (i === 0) {
+        const yesterday = new Date(today);
+        yesterday.setDate(yesterday.getDate() - 1);
+        const yesterdayStr = yesterday.toISOString().split("T")[0];
+        if (dates.some((d) => d.date === yesterdayStr)) {
+          streak++;
+        } else {
+          break;
+        }
+      } else {
+        break;
+      }
+    }
+    return streak;
   }
 };
 const goalDb = {
-  getAll() {
-    return getDb().prepare("SELECT * FROM reading_goals ORDER BY createdAt DESC").all();
+  getActiveGoal() {
+    return getDb().prepare("SELECT * FROM reading_goals WHERE isActive = 1 ORDER BY createdAt DESC LIMIT 1").get();
   },
-  getActive() {
-    const now = Date.now();
-    return getDb().prepare("SELECT * FROM reading_goals WHERE periodStart <= ? AND periodEnd >= ? ORDER BY createdAt DESC LIMIT 1").get(now, now);
+  getAllGoals() {
+    return getDb().prepare("SELECT * FROM reading_goals ORDER BY createdAt DESC").all();
   },
   create(goal) {
     const now = Date.now();
     const stmt = getDb().prepare(`
-      INSERT INTO reading_goals (type, target, targetType, current, periodStart, periodEnd, isCompleted, createdAt)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO reading_goals (dailyTarget, targetUnit, startDate, endDate, isActive, createdAt)
+      VALUES (?, ?, ?, ?, ?, ?)
     `);
     const result = stmt.run(
-      goal.type,
-      goal.target,
-      goal.targetType,
-      goal.current,
-      goal.periodStart,
-      goal.periodEnd,
-      goal.isCompleted,
+      goal.dailyTarget,
+      goal.targetUnit,
+      goal.startDate,
+      goal.endDate || null,
+      goal.isActive,
       now
     );
     return Number(result.lastInsertRowid);
   },
-  updateProgress(id, increment) {
-    const goal = getDb().prepare("SELECT * FROM reading_goals WHERE id = ?").get(id);
-    if (!goal) return 0;
-    const newCurrent = goal.current + increment;
-    const isCompleted = newCurrent >= goal.target ? 1 : 0;
-    getDb().prepare("UPDATE reading_goals SET current = ?, isCompleted = ? WHERE id = ?").run(newCurrent, isCompleted, id);
-    return newCurrent;
-  },
-  checkIn(type) {
-    const today = (/* @__PURE__ */ new Date()).toISOString().split("T")[0];
-    const todayStart = new Date(today).getTime();
-    const existingToday = getDb().prepare("SELECT * FROM reading_goals WHERE type = ? AND periodStart = ?").get(type, todayStart);
-    if (existingToday) {
-      return { success: false, streak: 0 };
-    }
-    const result = getDb().prepare(`
-        SELECT COUNT(*) as count 
-        FROM reading_goals 
-        WHERE type = ? AND isCompleted = 1 
-        ORDER BY periodStart DESC
-      `).get(type);
-    return { success: true, streak: result.count + 1 };
+  update(id, updates) {
+    const fields = Object.keys(updates).filter((k) => k !== "id");
+    if (fields.length === 0) return;
+    const setClause = fields.map((f) => `${f} = ?`).join(", ");
+    const values = fields.map((f) => updates[f]);
+    values.push(id);
+    const stmt = getDb().prepare(`UPDATE reading_goals SET ${setClause} WHERE id = ?`);
+    stmt.run(...values);
   },
   delete(id) {
     getDb().prepare("DELETE FROM reading_goals WHERE id = ?").run(id);
+  },
+  getDailyRecords(days = 7) {
+    const records = [];
+    const goal = this.getActiveGoal();
+    if (!goal) return records;
+    for (let i = days - 1; i >= 0; i--) {
+      const date = /* @__PURE__ */ new Date();
+      date.setDate(date.getDate() - i);
+      const dateStr = date.toISOString().split("T")[0];
+      const dailyTotal = statsDb.getDailyTotal(dateStr);
+      let current = 0;
+      switch (goal.targetUnit) {
+        case "minutes":
+          current = Math.round(dailyTotal.readTime / 60);
+          break;
+        case "pages":
+          current = dailyTotal.readPages;
+          break;
+        case "characters":
+          current = dailyTotal.readCharacters;
+          break;
+      }
+      records.push({
+        date: dateStr,
+        readTime: dailyTotal.readTime,
+        readPages: dailyTotal.readPages,
+        readCharacters: dailyTotal.readCharacters,
+        targetReached: current >= goal.dailyTarget ? 1 : 0
+      });
+    }
+    return records;
+  },
+  getGoalProgress() {
+    const goal = this.getActiveGoal();
+    if (!goal) return null;
+    const today = (/* @__PURE__ */ new Date()).toISOString().split("T")[0];
+    const dailyTotal = statsDb.getDailyTotal(today);
+    let current = 0;
+    switch (goal.targetUnit) {
+      case "minutes":
+        current = Math.round(dailyTotal.readTime / 60);
+        break;
+      case "pages":
+        current = dailyTotal.readPages;
+        break;
+      case "characters":
+        current = dailyTotal.readCharacters;
+        break;
+    }
+    const percentage = goal.dailyTarget > 0 ? Math.min(100, Math.round(current / goal.dailyTarget * 100)) : 0;
+    const streak = statsDb.getReadingStreak();
+    const records = this.getDailyRecords(7);
+    return {
+      goal,
+      current,
+      target: goal.dailyTarget,
+      percentage,
+      streak,
+      records
+    };
   }
 };
 const SUPPORTED_EXTENSIONS = [".txt", ".epub", ".pdf", ".chm"];
@@ -742,279 +1388,21 @@ const CHAPTER_PATTERNS = [
   /^Chapter\s+\d+.*$/im,
   /^\d+\s*[.、]\s*.+$/m,
   /^[【\[].*[】\]]\s*$/m,
-  /^楔子|^序章|^序言|^前言|^后记|^番外|^引子|^尾声/m,
-  /^[正外前后序末]篇.*$/m,
-  /^第[一二三四五六七八九十百千零\d]+卷.*$/m,
-  /^BOOK\s*\d+.*$/im,
-  /^VOLUME\s*\d+.*$/im,
-  /^Act\s*\d+.*$/im,
-  /^Scene\s*\d+.*$/im,
-  /^Episode\s*\d+.*$/im,
-  /^\([一二三四五六七八九十\d]+\).*$/m,
-  /^[一二三四五六七八九十百千]+、.*$/m
+  /^楔子|^序章|^序言|^前言|^后记|^番外|^引子|^尾声/m
 ];
-const GARBLED_PATTERNS = [
-  { pattern: /[^\u4e00-\u9fa5\u0000-\u007f\u3000-\u303f\uff00-\uffef\r\n\t]/g, replace: "" },
-  { pattern: /\u0000+/g, replace: "" },
-  { pattern: /\uFFFD+/g, replace: "" },
-  { pattern: /[�]+/g, replace: "" },
-  { pattern: /\r{2,}/g, replace: "\r" },
-  { pattern: / {4,}/g, replace: "  " }
-];
-const AUTHOR_PATTERNS = [
-  /作者[：:]\s*([^\n\r]+)/i,
-  /作\s*者[：:]\s*([^\n\r]+)/i,
-  /[【\[]作者[】\]]\s*([^\n\r]+)/i,
-  /Author[：:]\s*([^\n\r]+)/i,
-  /著[：:]\s*([^\n\r]+)/i,
-  /^([^\n\r]{2,20})\s*著$/im
-];
-const TAG_KEYWORDS = [
-  "玄幻",
-  "奇幻",
-  "仙侠",
-  "武侠",
-  "都市",
-  "言情",
-  "历史",
-  "军事",
-  "科幻",
-  "悬疑",
-  "恐怖",
-  "灵异",
-  "游戏",
-  "竞技",
-  "同人",
-  "耽美",
-  "百合",
-  "穿越",
-  "重生",
-  "系统",
-  "快穿",
-  "无限流",
-  "种田",
-  "基建",
-  "爽文",
-  "甜文",
-  "虐文",
-  "治愈",
-  "搞笑",
-  "轻松",
-  "正剧",
-  "悲剧",
-  "总裁",
-  "豪门",
-  "校园",
-  "职场",
-  "娱乐圈",
-  "网游",
-  "末世",
-  "星际",
-  "修真",
-  "修仙",
-  "魔法",
-  "斗气",
-  "洪荒",
-  "封神",
-  "西游",
-  "三国"
-];
-function cleanText(content, options = {}) {
-  const { removeEmptyLines = true, fixGarbled = true, removeDuplicates = true } = options;
-  let cleaned = content;
-  let emptyLinesRemoved = 0;
-  let garbledFixed = 0;
-  const originalLength = content.length;
-  if (fixGarbled) {
-    for (const { pattern, replace } of GARBLED_PATTERNS) {
-      const matches = cleaned.match(pattern);
-      if (matches) {
-        garbledFixed += matches.length;
-        cleaned = cleaned.replace(pattern, replace);
-      }
-    }
-  }
-  if (removeEmptyLines) {
-    const lines = cleaned.split("\n");
-    const nonEmptyLines = [];
-    let consecutiveEmpty = 0;
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (trimmed === "") {
-        consecutiveEmpty++;
-        if (consecutiveEmpty <= 1) {
-          nonEmptyLines.push(line);
-        } else {
-          emptyLinesRemoved++;
-        }
-      } else {
-        consecutiveEmpty = 0;
-        nonEmptyLines.push(line);
-      }
-    }
-    cleaned = nonEmptyLines.join("\n");
-  }
-  const duplicateChapters = [];
-  if (removeDuplicates) {
-    const chapters = extractChapters(cleaned);
-    const seenTitles = /* @__PURE__ */ new Map();
-    for (let i = 0; i < chapters.length; i++) {
-      const title = chapters[i].title;
-      if (seenTitles.has(title)) {
-        duplicateChapters.push(i);
-      } else {
-        seenTitles.set(title, i);
-      }
-    }
-    if (duplicateChapters.length > 0) {
-      for (let i = duplicateChapters.length - 1; i >= 0; i--) {
-        const idx = duplicateChapters[i];
-        const chapter = chapters[idx];
-        const nextChapter = chapters[idx + 1];
-        if (nextChapter) {
-          cleaned = cleaned.slice(0, chapter.startPosition) + cleaned.slice(nextChapter.startPosition);
-        }
-      }
-    }
-  }
-  return {
-    originalLength,
-    cleanedLength: cleaned.length,
-    emptyLinesRemoved,
-    duplicateChapters,
-    garbledFixed,
-    content: cleaned
-  };
-}
-function smartExtractChapters(content) {
-  const chapters = [];
-  const lines = content.split("\n");
-  let currentPosition = 0;
-  let chapterIndex = 0;
-  const introChapter = {
-    index: 0,
-    title: "引言",
-    startPosition: 0,
-    endPosition: 0,
-    startPage: 0
-  };
-  chapters.push(introChapter);
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i].trim();
-    if (line.length > 0 && line.length < 150) {
-      let isChapter = false;
-      for (const pattern of CHAPTER_PATTERNS) {
-        if (pattern.test(line)) {
-          isChapter = true;
-          break;
-        }
-      }
-      if (!isChapter) {
-        const prevLine = i > 0 ? lines[i - 1].trim() : "";
-        const nextLine = i < lines.length - 1 ? lines[i + 1].trim() : "";
-        const isIsolated = prevLine === "" && nextLine === "";
-        const hasChapterKeyword = /(章|节|卷|部|回|话|篇)/.test(line);
-        if (isIsolated && hasChapterKeyword && line.length < 50) {
-          isChapter = true;
-        }
-      }
-      if (isChapter) {
-        if (chapters.length > 0) {
-          chapters[chapters.length - 1].endPosition = currentPosition;
-        }
-        chapterIndex++;
-        chapters.push({
-          index: chapterIndex,
-          title: line.replace(/[\s\r\n]+$/, ""),
-          startPosition: currentPosition,
-          endPosition: 0,
-          startPage: 0
-        });
-      }
-    }
-    currentPosition += lines[i].length + 1;
-  }
-  if (chapters.length > 0) {
-    chapters[chapters.length - 1].endPosition = content.length;
-  }
-  return chapters;
-}
-function extractBookSmartInfo(content, title) {
-  let author = "未知";
-  const tags = [];
-  const first3000Chars = content.slice(0, 3e3);
-  const last3000Chars = content.slice(-3e3);
-  const fullSample = first3000Chars + "\n" + last3000Chars;
-  for (const pattern of AUTHOR_PATTERNS) {
-    const match = fullSample.match(pattern);
-    if (match && match[1]) {
-      author = match[1].trim();
-      if (author.length > 30) {
-        author = author.slice(0, 30);
-      }
-      break;
-    }
-  }
-  for (const keyword of TAG_KEYWORDS) {
-    const regex = new RegExp(keyword, "gi");
-    if (regex.test(fullSample)) {
-      tags.push(keyword);
-      if (tags.length >= 5) break;
-    }
-  }
-  const chapters = extractChapters(content);
-  const chineseChars = content.match(/[\u4e00-\u9fa5]/g) || [];
-  const englishChars = content.match(/[a-zA-Z]/g) || [];
-  const detectedLanguage = chineseChars.length > englishChars.length ? "zh" : "en";
-  const summary = generateSummary(content, chapters, title);
-  return {
-    summary,
-    author,
-    tags,
-    estimatedChapters: chapters.length,
-    wordCount: content.length,
-    detectedLanguage
-  };
-}
-function generateSummary(content, chapters, title) {
-  const firstChapterContent = chapters.length > 1 ? content.slice(chapters[1].startPosition, chapters[1].startPosition + 1e3) : content.slice(0, 1e3);
-  let summary = firstChapterContent.replace(/\s+/g, " ").replace(/[，。！？、；：]/g, "，").split("，").slice(0, 5).join("，").trim();
-  if (summary.length > 200) {
-    summary = summary.slice(0, 200) + "...";
-  }
-  if (summary.length < 50) {
-    summary = `《${title}》共${chapters.length}章，${(content.length / 1e4).toFixed(1)}万字。`;
-  }
-  return summary;
-}
-function parseTxtFile(filePath, encoding, options = {}) {
-  var _a;
-  const { smartDetection = true, autoClean = true } = options;
+function parseTxtFile(filePath, encoding) {
   const buffer = fs.readFileSync(filePath);
   if (!encoding) {
     encoding = detectEncoding(buffer);
   }
-  let content = readTextFile(filePath, encoding);
-  if (autoClean) {
-    const cleanResult = cleanText(content, {
-      removeEmptyLines: true,
-      fixGarbled: true,
-      removeDuplicates: true
-    });
-    content = cleanResult.content;
-  }
-  const chapters = smartDetection ? smartExtractChapters(content) : extractChapters(content);
-  const result = {
+  const content = readTextFile(filePath, encoding);
+  const chapters = extractChapters(content);
+  return {
     content,
     encoding,
     chapters,
     totalCharacters: content.length
   };
-  if (smartDetection) {
-    const fileName = ((_a = filePath.split(/[/\\]/).pop()) == null ? void 0 : _a.replace(/\.[^/.]+$/, "")) || "未知书籍";
-    result.smartInfo = extractBookSmartInfo(content, fileName);
-  }
-  return result;
 }
 function extractChapters(content) {
   const chapters = [];
@@ -1263,6 +1651,19 @@ function paginateChapter(content, chapter, startPage, pageChars) {
 }
 const bookCache = /* @__PURE__ */ new Map();
 const LARGE_FILE_THRESHOLD = 50 * 1024 * 1024;
+const DEFAULT_CLEANUP_OPTIONS = {
+  removeDuplicateChapters: true,
+  removeEmptyLines: true,
+  fixGarbledText: true,
+  normalizePunctuation: true,
+  removeExtraSpaces: true
+};
+const DEFAULT_SMART_CHAPTER_OPTIONS = {
+  enableSmartSegmentation: true,
+  minChapterLength: 500,
+  mergeShortChapters: true,
+  autoDetectTitlePatterns: true
+};
 function registerIpcHandlers() {
   electron.ipcMain.handle("app:getConfig", () => getConfig());
   electron.ipcMain.handle("app:getReadingConfig", () => getReadingConfig());
@@ -1283,6 +1684,11 @@ function registerIpcHandlers() {
   electron.ipcMain.handle("app:updateShortcuts", (_e, updates) => {
     updateShortcuts(updates);
     return getShortcuts();
+  });
+  electron.ipcMain.handle("app:getThemeTemplates", () => getThemeTemplatesList());
+  electron.ipcMain.handle("app:applyThemeTemplate", (_e, templateId) => {
+    applyThemeTemplate(templateId);
+    return getReadingConfig();
   });
   electron.ipcMain.handle("app:addScanPath", (_e, path2) => {
     addScanPath(path2);
@@ -1320,6 +1726,24 @@ function registerIpcHandlers() {
   electron.ipcMain.handle("book:addReadingTime", (_e, bookId, duration) => {
     bookDb.addReadingTime(bookId, duration);
     return true;
+  });
+  electron.ipcMain.handle("book:updateMetadata", (_e, bookId, metadata) => {
+    bookDb.updateMetadata(bookId, metadata);
+    return true;
+  });
+  electron.ipcMain.handle("book:getMetadata", (_e, bookId) => {
+    const book = bookDb.getById(bookId);
+    if (!book) return null;
+    const tags = book.tags ? JSON.parse(book.tags) : [];
+    return {
+      title: book.title,
+      author: book.author,
+      summary: book.summary,
+      tags,
+      detectedAuthor: book.detectedAuthor,
+      wordCount: book.totalCharacters,
+      totalPages: book.totalPages
+    };
   });
   electron.ipcMain.handle("book:add", async (_e, filePath) => {
     if (!fs.existsSync(filePath) || !isSupportedFile(filePath)) {
@@ -1436,6 +1860,30 @@ function registerIpcHandlers() {
   });
   electron.ipcMain.handle("progress:getByBookId", (_e, bookId, limit) => progressDb.getByBookId(bookId, limit));
   electron.ipcMain.handle("progress:add", (_e, progress) => progressDb.create(progress));
+  electron.ipcMain.handle("stats:getByBookId", (_e, bookId, startDate, endDate) => statsDb.getByBookId(bookId, startDate, endDate));
+  electron.ipcMain.handle("stats:getByDateRange", (_e, startDate, endDate) => statsDb.getByDateRange(startDate, endDate));
+  electron.ipcMain.handle("stats:getDailyStats", (_e, date) => statsDb.getDailyStats(date));
+  electron.ipcMain.handle("stats:getDailyTotal", (_e, date) => statsDb.getDailyTotal(date));
+  electron.ipcMain.handle("stats:getDailyAverages", (_e, days) => statsDb.getDailyAverages(days));
+  electron.ipcMain.handle("stats:getAverageSpeed", (_e, bookId) => statsDb.getAverageReadingSpeed(bookId));
+  electron.ipcMain.handle("stats:getReadingStreak", () => statsDb.getReadingStreak());
+  electron.ipcMain.handle("stats:recordSession", (_e, bookId, readTime, readPages, readChars) => {
+    statsDb.recordReadingSession(bookId, readTime, readPages, readChars);
+    return true;
+  });
+  electron.ipcMain.handle("goal:getActiveGoal", () => goalDb.getActiveGoal());
+  electron.ipcMain.handle("goal:getAllGoals", () => goalDb.getAllGoals());
+  electron.ipcMain.handle("goal:getGoalProgress", () => goalDb.getGoalProgress());
+  electron.ipcMain.handle("goal:getDailyRecords", (_e, days) => goalDb.getDailyRecords(days));
+  electron.ipcMain.handle("goal:create", (_e, goal) => goalDb.create(goal));
+  electron.ipcMain.handle("goal:update", (_e, id, updates) => {
+    goalDb.update(id, updates);
+    return true;
+  });
+  electron.ipcMain.handle("goal:delete", (_e, id) => {
+    goalDb.delete(id);
+    return true;
+  });
   electron.ipcMain.handle("file:listDirectory", (_e, dirPath) => listDirectory(dirPath));
   async function addBookInternal(filePath) {
     if (!fs.existsSync(filePath) || !isSupportedFile(filePath)) {
@@ -1453,17 +1901,21 @@ function registerIpcHandlers() {
     let totalCharacters = 0;
     let coverPath = null;
     let summary = "";
-    let tags = "";
+    let tags = [];
+    let detectedAuthor = "";
     try {
       if (fileType === "txt") {
-        const result = parseTxtFile(filePath, void 0, { smartDetection: true, autoClean: true });
+        const result = parseTxtFile(filePath);
         encoding = result.encoding;
         totalCharacters = result.totalCharacters;
-        if (result.smartInfo) {
-          author = result.smartInfo.author || author;
-          title = result.smartInfo.estimatedChapters > 1 ? title : getFileNameWithoutExtension(filePath);
-          summary = result.smartInfo.summary || "";
-          tags = result.smartInfo.tags.join(",") || "";
+        const metadata = extractMetadata(result.content, title);
+        author = metadata.author;
+        detectedAuthor = metadata.author;
+        summary = metadata.summary;
+        tags = metadata.tags;
+        const quality = analyzeTextQuality(result.content);
+        if (quality.hasGarbled || quality.emptyLineRatio > 0.3) {
+          console.log(`Text quality issues detected for ${filePath}:`, quality);
         }
       } else if (fileType === "epub") {
         const result = parseEpubFile(filePath);
@@ -1471,6 +1923,8 @@ function registerIpcHandlers() {
         author = result.author || author;
         coverPath = result.coverPath;
         totalCharacters = result.totalCharacters;
+        summary = result.content.slice(0, 300);
+        detectedAuthor = author;
       } else if (fileType === "pdf" || fileType === "chm") {
         const stats = fs.statSync(filePath);
         totalCharacters = stats.size;
@@ -1495,7 +1949,10 @@ function registerIpcHandlers() {
       totalReadingTime: 0,
       notes: "",
       summary,
-      tags
+      tags: JSON.stringify(tags),
+      detectedAuthor,
+      createdAt: Date.now(),
+      updatedAt: Date.now()
     });
     return bookId;
   }
@@ -1557,12 +2014,33 @@ function registerIpcHandlers() {
   electron.ipcMain.handle("file:readText", (_e, filePath, encoding) => {
     return readTextFile(filePath, encoding);
   });
+  electron.ipcMain.handle("file:selectImage", async () => {
+    const result = await electron.dialog.showOpenDialog({
+      properties: ["openFile"],
+      filters: [
+        { name: "图片文件", extensions: ["jpg", "jpeg", "png", "gif", "bmp", "webp"] }
+      ]
+    });
+    return result.canceled ? null : result.filePaths[0];
+  });
+  electron.ipcMain.handle("file:selectFont", async () => {
+    const result = await electron.dialog.showOpenDialog({
+      properties: ["openFile"],
+      filters: [
+        { name: "字体文件", extensions: ["ttf", "otf", "woff", "woff2"] }
+      ]
+    });
+    return result.canceled ? null : result.filePaths[0];
+  });
   electron.ipcMain.handle("reader:openBook", (_e, bookId, pageChars = 800) => {
     const book = bookDb.getById(bookId);
     if (!book) throw new Error("书籍不存在");
     setReadingStart(bookId);
     const cached = bookCache.get(bookId);
     if (cached) {
+      cached.readingSessionStart = Date.now();
+      cached.readingSessionPages = 0;
+      cached.readingSessionChars = 0;
       return {
         content: cached.isLargeFile ? "" : cached.content,
         chapters: cached.chapters,
@@ -1578,6 +2056,14 @@ function registerIpcHandlers() {
         const result = parseTxtFile(book.filePath, book.encoding);
         content = result.content;
         chapters = result.chapters;
+        const quality = analyzeTextQuality(content);
+        if (quality.hasGarbled || quality.emptyLineRatio > 0.3 || detectDuplicateChapters(chapters).length > 0) {
+          const cleanedContent = cleanText(content, DEFAULT_CLEANUP_OPTIONS);
+          const smartChapters = smartExtractChapters(cleanedContent, DEFAULT_SMART_CHAPTER_OPTIONS);
+          const dedupResult = removeDuplicateChapters(cleanedContent, smartChapters);
+          content = dedupResult.content;
+          chapters = dedupResult.chapters;
+        }
       } else if (book.fileType === "epub") {
         const result = parseEpubFile(book.filePath);
         content = result.content;
@@ -1607,7 +2093,10 @@ function registerIpcHandlers() {
       chapters,
       totalPages: pagination.totalPages,
       pages: pagination.pages,
-      isLargeFile
+      isLargeFile,
+      readingSessionStart: Date.now(),
+      readingSessionPages: 0,
+      readingSessionChars: 0
     };
     bookCache.set(bookId, cacheData);
     bookDb.update(bookId, { totalPages: pagination.totalPages });
@@ -1623,6 +2112,13 @@ function registerIpcHandlers() {
     if (!book) throw new Error("书籍不存在");
     const cache = bookCache.get(bookId);
     if (!cache) throw new Error("书籍未加载");
+    if (cache.readingSessionStart) {
+      const pageContent = cache.pages.find((p) => p.page === page);
+      if (pageContent) {
+        cache.readingSessionPages = (cache.readingSessionPages || 0) + 1;
+        cache.readingSessionChars = (cache.readingSessionChars || 0) + (pageContent.endPosition - pageContent.startPosition);
+      }
+    }
     return cache.pages.find((p) => p.page === page) || null;
   });
   electron.ipcMain.handle("reader:getFullContent", (_e, bookId) => {
@@ -1764,183 +2260,63 @@ function registerIpcHandlers() {
     return cache.chapters;
   });
   electron.ipcMain.handle("reader:closeBook", (_e, bookId) => {
+    const cache = bookCache.get(bookId);
+    if (cache && cache.readingSessionStart) {
+      const readTime = Math.floor((Date.now() - cache.readingSessionStart) / 1e3);
+      if (readTime > 10) {
+        statsDb.recordReadingSession(
+          bookId,
+          readTime,
+          cache.readingSessionPages || 0,
+          cache.readingSessionChars || 0
+        );
+        bookDb.addReadingTime(bookId, readTime);
+      }
+    }
     saveReadingTime();
     bookCache.delete(bookId);
     return true;
   });
   electron.ipcMain.handle("reader:generateToc", (_e, content) => {
-    return extractChapters(content);
-  });
-  electron.ipcMain.handle("reader:smartGenerateToc", (_e, content) => {
-    return smartExtractChapters(content);
+    return smartExtractChapters(content, DEFAULT_SMART_CHAPTER_OPTIONS);
   });
   electron.ipcMain.handle("reader:cleanText", (_e, content, options) => {
-    return cleanText(content, options);
+    return cleanText(content, options || DEFAULT_CLEANUP_OPTIONS);
   });
-  electron.ipcMain.handle("reader:getSmartInfo", (_e, bookId) => {
+  electron.ipcMain.handle("reader:analyzeQuality", (_e, content) => {
+    return analyzeTextQuality(content);
+  });
+  electron.ipcMain.handle("reader:extractMetadata", (_e, content, title) => {
+    return extractMetadata(content, title);
+  });
+  electron.ipcMain.handle("reader:smartRechapters", (_e, bookId, options) => {
     const book = bookDb.getById(bookId);
     if (!book) throw new Error("书籍不存在");
     const cache = bookCache.get(bookId);
     if (!cache) throw new Error("书籍未加载");
-    return extractBookSmartInfo(cache.content, book.title);
+    const smartOptions = options || DEFAULT_SMART_CHAPTER_OPTIONS;
+    const newChapters = smartExtractChapters(cache.content, smartOptions);
+    const dedupResult = removeDuplicateChapters(cache.content, newChapters);
+    cache.chapters = dedupResult.chapters;
+    cache.content = dedupResult.content;
+    const pageChars = getReadingConfig().pageChars;
+    const pagination = paginateContent(cache.content, cache.chapters, pageChars);
+    cache.pages = pagination.pages;
+    cache.totalPages = pagination.totalPages;
+    bookDb.update(bookId, { totalPages: pagination.totalPages });
+    return {
+      chapters: cache.chapters,
+      totalPages: cache.totalPages
+    };
   });
-  electron.ipcMain.handle("reader:goToPercent", (_e, bookId, percent) => {
+  electron.ipcMain.handle("reader:goToPercentage", (_e, bookId, percentage) => {
     const book = bookDb.getById(bookId);
     if (!book) throw new Error("书籍不存在");
     const cache = bookCache.get(bookId);
     if (!cache) throw new Error("书籍未加载");
-    const targetPage = Math.max(1, Math.min(cache.totalPages, Math.floor(cache.totalPages * percent / 100)));
-    return cache.pages.find((p) => p.page === targetPage) || null;
-  });
-  electron.ipcMain.handle("stats:getByDate", (_e, date) => statsDb.getByDate(date));
-  electron.ipcMain.handle("stats:getByBookId", (_e, bookId, limit) => statsDb.getByBookId(bookId, limit));
-  electron.ipcMain.handle("stats:getDateRange", (_e, startDate, endDate) => statsDb.getDateRange(startDate, endDate));
-  electron.ipcMain.handle("stats:addReading", (_e, bookId, pagesRead, charactersRead, readingTime) => {
-    return statsDb.addReading(bookId, pagesRead, charactersRead, readingTime);
-  });
-  electron.ipcMain.handle("stats:getDailyAverage", (_e, days) => statsDb.getDailyAverage(days));
-  electron.ipcMain.handle("stats:getPagesPerMinute", (_e, bookId) => statsDb.getPagesPerMinute(bookId));
-  electron.ipcMain.handle("goals:getAll", () => goalDb.getAll());
-  electron.ipcMain.handle("goals:getActive", () => goalDb.getActive());
-  electron.ipcMain.handle("goals:create", (_e, goal) => goalDb.create(goal));
-  electron.ipcMain.handle("goals:updateProgress", (_e, id, increment) => goalDb.updateProgress(id, increment));
-  electron.ipcMain.handle("goals:checkIn", (_e, type) => goalDb.checkIn(type));
-  electron.ipcMain.handle("goals:delete", (_e, id) => goalDb.delete(id));
-  electron.ipcMain.handle("theme:getPresetThemes", () => {
-    return [
-      {
-        name: "light",
-        displayName: "日间",
-        bgPrimary: "#ffffff",
-        bgSecondary: "#f5f5f5",
-        bgTertiary: "#fafafa",
-        textPrimary: "#333333",
-        textSecondary: "#666666",
-        textTertiary: "#999999",
-        borderColor: "#e5e5e5",
-        accentColor: "#409eff",
-        readerBg: "#fdfbf7",
-        readerText: "#333333",
-        bgPrimaryRgb: "255, 255, 255"
-      },
-      {
-        name: "dark",
-        displayName: "夜间",
-        bgPrimary: "#1a1a2e",
-        bgSecondary: "#16213e",
-        bgTertiary: "#0f0f1a",
-        textPrimary: "#e5e5e5",
-        textSecondary: "#a0a0a0",
-        textTertiary: "#666666",
-        borderColor: "#2d2d44",
-        accentColor: "#66b1ff",
-        readerBg: "#1a1a2e",
-        readerText: "#c0c0c0",
-        bgPrimaryRgb: "26, 26, 46"
-      },
-      {
-        name: "eye",
-        displayName: "护眼",
-        bgPrimary: "#c7edcc",
-        bgSecondary: "#b8e8c2",
-        bgTertiary: "#d4f0d9",
-        textPrimary: "#2f4f4f",
-        textSecondary: "#3d5c5c",
-        textTertiary: "#5a7a7a",
-        borderColor: "#a0d4a8",
-        accentColor: "#2e8b57",
-        readerBg: "#c7edcc",
-        readerText: "#2f4f4f",
-        bgPrimaryRgb: "199, 237, 204"
-      },
-      {
-        name: "sepia",
-        displayName: "羊皮纸",
-        bgPrimary: "#f4ecd8",
-        bgSecondary: "#e8dcc8",
-        bgTertiary: "#f0e6d0",
-        textPrimary: "#5b4636",
-        textSecondary: "#7a6555",
-        textTertiary: "#998877",
-        borderColor: "#d4c4a8",
-        accentColor: "#8b7355",
-        readerBg: "#f4ecd8",
-        readerText: "#5b4636",
-        bgPrimaryRgb: "244, 236, 216"
-      },
-      {
-        name: "gray",
-        displayName: "灰调",
-        bgPrimary: "#f0f0f0",
-        bgSecondary: "#e0e0e0",
-        bgTertiary: "#e8e8e8",
-        textPrimary: "#333333",
-        textSecondary: "#666666",
-        textTertiary: "#999999",
-        borderColor: "#d0d0d0",
-        accentColor: "#666666",
-        readerBg: "#f0f0f0",
-        readerText: "#333333",
-        bgPrimaryRgb: "240, 240, 240"
-      },
-      {
-        name: "blue",
-        displayName: "深蓝",
-        bgPrimary: "#0a192f",
-        bgSecondary: "#112240",
-        bgTertiary: "#0d1a2d",
-        textPrimary: "#e6f1ff",
-        textSecondary: "#a8b2d1",
-        textTertiary: "#8892b0",
-        borderColor: "#233554",
-        accentColor: "#64ffda",
-        readerBg: "#0a192f",
-        readerText: "#e6f1ff",
-        bgPrimaryRgb: "10, 25, 47"
-      }
-    ];
-  });
-  electron.ipcMain.handle("file:uploadBackground", async () => {
-    const result = await electron.dialog.showOpenDialog({
-      properties: ["openFile"],
-      filters: [{ name: "图片文件", extensions: ["jpg", "jpeg", "png", "gif", "webp"] }]
-    });
-    if (!result.canceled && result.filePaths.length > 0) {
-      const userDataPath = electron.app.getPath("userData");
-      const backgroundsDir = path.join(userDataPath, "backgrounds");
-      if (!fs.existsSync(backgroundsDir)) {
-        fs.mkdirSync(backgroundsDir, { recursive: true });
-      }
-      const originalPath = result.filePaths[0];
-      const fileName = `bg_${Date.now()}${path.extname(originalPath)}`;
-      const newPath = path.join(backgroundsDir, fileName);
-      fs.copyFileSync(originalPath, newPath);
-      return newPath;
-    }
-    return null;
-  });
-  electron.ipcMain.handle("file:uploadFont", async () => {
-    const result = await electron.dialog.showOpenDialog({
-      properties: ["openFile"],
-      filters: [{ name: "字体文件", extensions: ["ttf", "otf", "woff", "woff2"] }]
-    });
-    if (!result.canceled && result.filePaths.length > 0) {
-      const userDataPath = electron.app.getPath("userData");
-      const fontsDir = path.join(userDataPath, "fonts");
-      if (!fs.existsSync(fontsDir)) {
-        fs.mkdirSync(fontsDir, { recursive: true });
-      }
-      const originalPath = result.filePaths[0];
-      const fileName = `font_${Date.now()}${path.extname(originalPath)}`;
-      const newPath = path.join(fontsDir, fileName);
-      fs.copyFileSync(originalPath, newPath);
-      return { path: newPath, name: path.basename(originalPath, path.extname(originalPath)) };
-    }
-    return null;
-  });
-  electron.ipcMain.handle("book:updateSmartInfo", (_e, bookId, updates) => {
-    bookDb.update(bookId, updates);
-    return bookDb.getById(bookId);
+    const targetPos = Math.floor(percentage / 100 * cache.content.length);
+    const page = cache.pages.find((p) => targetPos >= p.startPosition && targetPos < p.endPosition);
+    return page ? page.page : 1;
   });
   electron.ipcMain.handle("shell:openExternal", (_e, url) => {
     electron.shell.openExternal(url);

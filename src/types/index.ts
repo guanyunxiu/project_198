@@ -15,50 +15,11 @@ export interface Book {
   lastReadTime: number
   totalReadingTime: number
   notes: string
-  summary?: string
-  tags?: string
+  summary: string
+  tags: string[]
+  detectedAuthor: string
   createdAt: number
   updatedAt: number
-}
-
-export interface ReadingStats {
-  id: number
-  bookId: number
-  date: string
-  pagesRead: number
-  charactersRead: number
-  readingTime: number
-  createdAt: number
-}
-
-export interface ReadingGoal {
-  id: number
-  type: 'daily' | 'weekly' | 'monthly'
-  target: number
-  targetType: 'pages' | 'minutes' | 'chapters'
-  current: number
-  periodStart: number
-  periodEnd: number
-  isCompleted: number
-  createdAt: number
-}
-
-export interface BookSmartInfo {
-  summary: string
-  author: string
-  tags: string[]
-  estimatedChapters: number
-  wordCount: number
-  detectedLanguage: string
-}
-
-export interface TextCleanResult {
-  originalLength: number
-  cleanedLength: number
-  emptyLinesRemoved: number
-  duplicateChapters: number[]
-  garbledFixed: number
-  content: string
 }
 
 export interface Category {
@@ -104,40 +65,86 @@ export interface PageContent {
   endPosition: number
 }
 
-export interface ThemeConfig {
-  name: string
-  displayName: string
-  bgPrimary: string
-  bgSecondary: string
-  bgTertiary: string
-  textPrimary: string
-  textSecondary: string
-  textTertiary: string
-  borderColor: string
-  accentColor: string
-  readerBg: string
-  readerText: string
-  bgPrimaryRgb: string
-}
-
 export interface ReadingConfig {
   fontSize: number
   lineHeight: number
   letterSpacing: number
   pageMargin: number
-  theme: 'light' | 'dark' | 'eye' | string
+  theme: 'light' | 'dark' | 'eye' | 'custom'
   readMode: 'scroll' | 'page'
   pageChars: number
   highlightColor: string
-  customTheme?: string
-  customBackground?: string
-  backgroundOpacity: number
-  customFont?: string
-  fontFamily: string
+  backgroundImage: string | null
+  customFont: string | null
+  customFontPath: string | null
   pageLayout: 'single' | 'double'
   orientation: 'portrait' | 'landscape'
-  autoTurnSpeed: number
-  autoTurnEnabled: boolean
+  opacity: number
+  autoFlipEnabled: boolean
+  autoFlipSpeed: number
+  autoFlipInterval: number
+  themeTemplate: string
+}
+
+export interface ThemeTemplate {
+  id: string
+  name: string
+  bgColor: string
+  textColor: string
+  accentColor: string
+  secondaryBg: string
+  borderColor: string
+  preview: string
+}
+
+export interface ReadingStats {
+  bookId: number
+  date: string
+  readTime: number
+  readPages: number
+  readCharacters: number
+  readingSpeed: number
+}
+
+export interface ReadingGoal {
+  id: number
+  dailyTarget: number
+  targetUnit: 'pages' | 'minutes' | 'characters'
+  startDate: number
+  endDate: number
+  isActive: boolean
+}
+
+export interface DailyReadingRecord {
+  date: string
+  readTime: number
+  readPages: number
+  readCharacters: number
+  targetReached: boolean
+}
+
+export interface ReadingGoalProgress {
+  goal: ReadingGoal
+  current: number
+  target: number
+  percentage: number
+  streak: number
+  records: DailyReadingRecord[]
+}
+
+export interface TextCleanupOptions {
+  removeDuplicateChapters: boolean
+  removeEmptyLines: boolean
+  fixGarbledText: boolean
+  normalizePunctuation: boolean
+  removeExtraSpaces: boolean
+}
+
+export interface SmartChapterOptions {
+  enableSmartSegmentation: boolean
+  minChapterLength: number
+  mergeShortChapters: boolean
+  autoDetectTitlePatterns: boolean
 }
 
 export interface ShortcutConfig {
@@ -195,13 +202,6 @@ export interface AppConfig {
   startMinimized: boolean
   shortcuts: ShortcutConfig
   readingConfig: ReadingConfig
-  customThemes: ThemeConfig[]
-  customFonts: string[]
-  dailyReadingGoal: number
-  weeklyReadingGoal: number
-  enableSmartChapterDetection: boolean
-  enableAutoCleanText: boolean
-  enableGarbledFix: boolean
 }
 
 export interface FileInfo {

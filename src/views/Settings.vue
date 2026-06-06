@@ -21,13 +21,28 @@ import {
   RefreshRight,
   Warning,
   FullScreen,
-  Top
+  Top,
+  Picture,
+  Document,
+  Edit,
+  Minus,
+  Plus,
+  Apple,
+  Food,
+  Collection,
+  Coffee,
+  Cherry
 } from '@element-plus/icons-vue'
-import type { ShortcutConfig } from '@/types'
+import type { ShortcutConfig, ThemeTemplate, ReadingGoal } from '@/types'
 
 const router = useRouter()
 const configStore = useConfigStore()
 const booksStore = useBooksStore()
+
+const readingGoalTarget = ref(30)
+const readingGoalUnit = ref<'pages' | 'minutes' | 'characters'>('pages')
+const activeGoal = ref<ReadingGoal | null>(null)
+const showGoalDialog = ref(false)
 
 const activeTab = ref('reading')
 const newCategoryName = ref('')
@@ -64,7 +79,103 @@ onMounted(async () => {
     windowSettings.startFullscreen = configStore.appConfig.startFullscreen ?? false
     windowSettings.startMinimized = configStore.appConfig.startMinimized ?? false
   }
+  await loadActiveGoal()
 })
+
+async function loadActiveGoal() {
+  try {
+    activeGoal.value = await window.electronAPI.goal.getActiveGoal()
+    if (activeGoal.value) {
+      readingGoalTarget.value = activeGoal.value.dailyTarget
+      readingGoalUnit.value = activeGoal.value.targetUnit
+    }
+  } catch (err) {
+    console.error('Load active goal error:', err)
+  }
+}
+
+async function handleSelectBackgroundImage() {
+  const path = await configStore.selectBackgroundImage()
+  if (path) {
+    ElMessage.success('背景图已设置')
+  }
+}
+
+async function handleClearBackgroundImage() {
+  await configStore.clearBackgroundImage()
+  ElMessage.info('背景图已清除')
+}
+
+async function handleSelectCustomFont() {
+  const path = await configStore.selectCustomFont()
+  if (path) {
+    ElMessage.success('字体已导入')
+  }
+}
+
+async function handleClearCustomFont() {
+  await configStore.clearCustomFont()
+  ElMessage.info('自定义字体已清除')
+}
+
+async function handleApplyThemeTemplate(templateId: string) {
+  await configStore.applyThemeTemplate(templateId)
+  ElMessage.success('主题已应用')
+}
+
+function adjustOpacity(delta: number) {
+  if (!configStore.readingConfig) return
+  const newOpacity = Math.min(100, Math.max(30, (configStore.readingConfig.opacity || 100) + delta))
+  configStore.updateReadingConfig({ opacity: newOpacity })
+}
+
+function togglePageLayout() {
+  if (!configStore.readingConfig) return
+  const newLayout = configStore.readingConfig.pageLayout === 'double' ? 'single' : 'double'
+  configStore.updateReadingConfig({ pageLayout: newLayout })
+  ElMessage.info(configStore.readingConfig.pageLayout === 'double' ? '已切换到双页模式' : '已切换到单页模式')
+}
+
+function toggleOrientation() {
+  if (!configStore.readingConfig) return
+  const newOrientation = configStore.readingConfig.orientation === 'landscape' ? 'portrait' : 'landscape'
+  configStore.updateReadingConfig({ orientation: newOrientation })
+  ElMessage.info(configStore.readingConfig.orientation === 'landscape' ? '已切换到横屏模式' : '已切换到竖屏模式')
+}
+
+async function handleSetReadingGoal() {
+  try {
+    await configStore.setReadingGoal(readingGoalTarget.value, readingGoalUnit.value)
+    await loadActiveGoal()
+    ElMessage.success('阅读目标已设置')
+    showGoalDialog.value = false
+  } catch (err) {
+    ElMessage.error('设置失败')
+  }
+}
+
+function formatUnitLabel(unit: string): string {
+  const labels: Record<string, string> = {
+    pages: '页',
+    minutes: '分钟',
+    characters: '字'
+  }
+  return labels[unit] || unit
+}
+
+function getThemeIcon(templateId: string) {
+  const icons: Record<string, any> = {
+    light: Sunny,
+    dark: MoonNight,
+    eye: Cherry,
+    paper: Food,
+    ocean: Apple,
+    forest: Collection,
+    sunset: Upload,
+    lavender: Coffee
+  }
+  return icons[templateId] || Sunny
+}
 
 function goBack() {
   router.push('/')
@@ -135,13 +246,7 @@ function resetReadingConfig() {
     theme: 'light',
     readMode: 'scroll',
     pageChars: 800,
-    highlightColor: '#ffeb3b',
-    backgroundOpacity: 100,
-    fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',
-    pageLayout: 'single',
-    orientation: 'portrait',
-    autoTurnSpeed: 30,
-    autoTurnEnabled: false
+    highlightColor: '#ffeb3b'
   })
   ElMessage.success('阅读设置已重置')
 }
@@ -353,70 +458,118 @@ function displayShortcut(value: string): string {
             </div>
 
             <div class="setting-item">
-              <label>默认主题</label>
-              <el-radio-group
-                v-model="configStore.readingConfig!.theme"
-                @change="(val) => configStore.updateReadingConfig({ theme: val })"
-              >
-                <el-radio-button value="light">日间</el-radio-button>
-                <el-radio-button value="dark">夜间</el-radio-button>
-                <el-radio-button value="eye">护眼</el-radio-button>
-                <el-radio-button value="sepia">羊皮纸</el-radio-button>
-                <el-radio-button value="gray">灰调</el-radio-button>
-                <el-radio-button value="blue">深蓝</el-radio-button>
-              </el-radio-group>
+              <label>主题模板</label>
+              <div class="theme-templates-grid">
+                <div
+                  v-for="template in configStore.themeTemplates"
+                  :key="template.id"
+                  class="theme-template-item"
+                  :class="{ active: configStore.themeClass === `theme-${template.id}` || (template.id === 'light' && !configStore.themeClass) }"
+                  @click="handleApplyThemeTemplate(template.id)"
+                >
+                  <div class="theme-template-preview" :style="{ backgroundColor: template.bgColor, borderColor: template.borderColor }">
+                    <el-icon :size="18" :style="{ color: template.textColor }">
+                      <component :is="getThemeIcon(template.id)" />
+                    </el-icon>
+                    <div class="preview-accent" :style="{ backgroundColor: template.accentColor }"></div>
+                  </div>
+                  <span class="template-name">{{ template.name }}</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="setting-item">
+              <label>个性化设置</label>
+              <div class="customization-grid">
+                <div class="customization-item">
+                  <div class="customization-label">
+                    <el-icon><Picture /></el-icon>
+                    <span>背景图</span>
+                  </div>
+                  <div class="customization-actions">
+                    <el-button size="small" @click="handleSelectBackgroundImage">选择图片</el-button>
+                    <el-button v-if="configStore.backgroundImage" size="small" type="danger" plain @click="handleClearBackgroundImage">清除</el-button>
+                  </div>
+                </div>
+                <div class="customization-item">
+                  <div class="customization-label">
+                    <el-icon><Font /></el-icon>
+                    <span>自定义字体</span>
+                  </div>
+                  <div class="customization-actions">
+                    <el-button size="small" @click="handleSelectCustomFont">导入字体</el-button>
+                    <el-button v-if="configStore.customFont" size="small" type="danger" plain @click="handleClearCustomFont">清除</el-button>
+                  </div>
+                </div>
+              </div>
+              <div v-if="configStore.customFont" class="current-font">
+                当前字体：{{ configStore.customFont }}
+              </div>
             </div>
 
             <div class="setting-item">
               <label>
-                每日阅读目标
-                <span class="value">{{ configStore.appConfig?.dailyReadingGoal || 30 }}分钟</span>
+                透明度
+                <span class="value">{{ configStore.readingConfig?.opacity ?? 100 }}%</span>
               </label>
-              <el-slider
-                :model-value="configStore.appConfig?.dailyReadingGoal || 30"
-                :min="10"
-                :max="180"
-                :step="10"
-                :marks="{ 30: '30min', 60: '1h', 120: '2h', 180: '3h' }"
-                @change="(val) => configStore.updateAppConfig({ dailyReadingGoal: val })"
-              />
+              <div class="control-row">
+                <el-button circle :icon="Minus" @click="adjustOpacity(-5)" />
+                <el-slider
+                  v-model="configStore.readingConfig!.opacity"
+                  :min="30"
+                  :max="100"
+                  :step="5"
+                  @change="(val) => configStore.updateReadingConfig({ opacity: val })"
+                />
+                <el-button circle :icon="Plus" @click="adjustOpacity(5)" />
+              </div>
             </div>
 
             <div class="setting-item">
-              <label>默认页面布局</label>
-              <el-radio-group
-                v-model="configStore.readingConfig!.pageLayout"
-                @change="(val) => configStore.updateReadingConfig({ pageLayout: val })"
-              >
-                <el-radio-button value="single">单页</el-radio-button>
-                <el-radio-button value="double">双页</el-radio-button>
-              </el-radio-group>
+              <label>页面布局</label>
+              <div class="layout-buttons">
+                <el-button
+                  :type="!configStore.isDoublePage ? 'primary' : 'default'"
+                  @click="togglePageLayout"
+                >
+                  <el-icon><Document /></el-icon>
+                  单页模式
+                </el-button>
+                <el-button
+                  :type="configStore.isDoublePage ? 'primary' : 'default'"
+                  @click="togglePageLayout"
+                >
+                  <el-icon><Collection /></el-icon>
+                  双页模式
+                </el-button>
+                <el-button
+                  :type="!configStore.isLandscape ? 'primary' : 'default'"
+                  @click="toggleOrientation"
+                >
+                  <el-icon><Cherry /></el-icon>
+                  竖屏模式
+                </el-button>
+                <el-button
+                  :type="configStore.isLandscape ? 'primary' : 'default'"
+                  @click="toggleOrientation"
+                >
+                  <el-icon><Food /></el-icon>
+                  横屏模式
+                </el-button>
+              </div>
             </div>
 
             <div class="setting-item">
-              <label>默认屏幕方向</label>
-              <el-radio-group
-                v-model="configStore.readingConfig!.orientation"
-                @change="(val) => configStore.updateReadingConfig({ orientation: val })"
-              >
-                <el-radio-button value="portrait">竖屏</el-radio-button>
-                <el-radio-button value="landscape">横屏</el-radio-button>
-              </el-radio-group>
-            </div>
-
-            <div class="setting-item">
-              <label>
-                默认自动翻页速度
-                <span class="value">{{ configStore.readingConfig?.autoTurnSpeed || 30 }}秒/页</span>
-              </label>
-              <el-slider
-                :model-value="configStore.readingConfig?.autoTurnSpeed || 30"
-                :min="5"
-                :max="120"
-                :step="5"
-                :marks="{ 10: '10s', 30: '30s', 60: '1min', 120: '2min' }"
-                @change="(val) => configStore.updateReadingConfig({ autoTurnSpeed: val })"
-              />
+              <label>自动翻页</label>
+              <div class="auto-flip-setting">
+                <el-switch
+                  v-model="configStore.readingConfig!.autoFlipEnabled"
+                  @change="(val) => configStore.updateReadingConfig({ autoFlipEnabled: val })"
+                />
+                <div v-if="configStore.readingConfig?.autoFlipEnabled" class="flip-speed-info">
+                  <span>速度：{{ configStore.readingConfig?.autoFlipSpeed || 3 }}页/分钟</span>
+                </div>
+              </div>
             </div>
 
             <div class="setting-item">
@@ -428,6 +581,19 @@ function displayShortcut(value: string): string {
                 <el-radio-button value="scroll">滚动模式</el-radio-button>
                 <el-radio-button value="page">翻页模式</el-radio-button>
               </el-radio-group>
+            </div>
+
+            <div class="setting-item">
+              <label>阅读目标</label>
+              <div class="reading-goal-setting">
+                <div v-if="activeGoal" class="current-goal">
+                  <span>当前目标：每天 {{ activeGoal.dailyTarget }} {{ formatUnitLabel(activeGoal.targetUnit) }}</span>
+                </div>
+                <el-button size="small" @click="showGoalDialog = true">
+                  <el-icon><Edit /></el-icon>
+                  {{ activeGoal ? '修改目标' : '设置目标' }}
+                </el-button>
+              </div>
             </div>
 
             <div class="setting-item">
@@ -836,20 +1002,10 @@ function displayShortcut(value: string): string {
               <h3>功能特性</h3>
               <ul>
                 <li>📖 支持 TXT、EPUB、PDF、CHM 格式</li>
-                <li>🎨 六种主题（日间/夜间/护眼/羊皮纸/灰调/深蓝）</li>
-                <li>🤖 AI智能分章，TXT无规则文本自动识别</li>
-                <li>📚 书籍摘要、作者、标签智能识别</li>
-                <li>📊 阅读速度统计、日均阅读、目标打卡</li>
-                <li>⏩ 自动翻页，速度可调</li>
-                <li>🧹 重复章节检测、空行清理、乱码修复</li>
-                <li>🖼️ 自定义背景图，透明度调节</li>
-                <li>🔤 自定义字体导入</li>
-                <li>📄 双页/单页切换阅读模式</li>
-                <li>🔄 横屏/竖屏阅读模式</li>
-                <li>🎯 阅读进度条精准拖拽，百分比跳转</li>
+                <li>🎨 三种主题（日间/夜间/护眼）</li>
                 <li>📑 智能分页，章节识别</li>
                 <li>🔖 书签功能</li>
-                <li>� 阅读进度保存</li>
+                <li>📊 阅读进度保存</li>
                 <li>📁 批量扫描导入</li>
                 <li>🏷️ 分类管理</li>
                 <li>⌨️ 自定义快捷键</li>
@@ -873,6 +1029,43 @@ function displayShortcut(value: string): string {
         <p class="hint">按 Esc 或点击外部取消</p>
       </div>
     </div>
+
+    <el-dialog
+      v-model="showGoalDialog"
+      title="设置阅读目标"
+      width="400px"
+    >
+      <div class="reading-goal-form">
+        <div class="goal-input-row">
+          <div class="goal-target-input">
+            <label>每日目标</label>
+            <el-input-number
+              v-model="readingGoalTarget"
+              :min="1"
+              :max="1000"
+              size="large"
+              style="width: 100%"
+            />
+          </div>
+          <div class="goal-unit-select">
+            <label>单位</label>
+            <el-select v-model="readingGoalUnit" size="large" style="width: 100%">
+              <el-option label="页" value="pages" />
+              <el-option label="分钟" value="minutes" />
+              <el-option label="字" value="characters" />
+            </el-select>
+          </div>
+        </div>
+      </div>
+      <template #footer>
+        <span class="dialog-footer">
+          <el-button @click="showGoalDialog = false">取消</el-button>
+          <el-button type="primary" @click="handleSetReadingGoal">
+            确认设置
+          </el-button>
+        </span>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -962,8 +1155,7 @@ function displayShortcut(value: string): string {
 
 .setting-item {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
+  flex-direction: column;
   padding: 16px 0;
   border-bottom: 1px solid var(--border-color);
 
@@ -978,6 +1170,7 @@ function displayShortcut(value: string): string {
     min-width: 160px;
     font-size: 14px;
     color: var(--text-primary);
+    margin-bottom: 8px;
 
     .value {
       color: var(--accent-color);
@@ -1286,6 +1479,177 @@ function displayShortcut(value: string): string {
         color: var(--text-secondary);
       }
     }
+  }
+}
+
+.theme-templates-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.theme-template-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.2s;
+  border: 2px solid transparent;
+  
+  &:hover {
+    background: var(--bg-tertiary);
+    transform: translateY(-2px);
+  }
+  
+  &.active {
+    border-color: var(--accent-color);
+    background: var(--bg-secondary);
+  }
+}
+
+.theme-template-preview {
+  width: 60px;
+  height: 60px;
+  border-radius: 8px;
+  border: 2px solid;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  overflow: hidden;
+  
+  .preview-accent {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: 6px;
+  }
+}
+
+.template-name {
+  font-size: 12px;
+  color: var(--text-secondary);
+  text-align: center;
+}
+
+.customization-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.customization-item {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 16px;
+  background: var(--bg-secondary);
+  border-radius: 8px;
+}
+
+.customization-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 500;
+  
+  .el-icon {
+    color: var(--accent-color);
+  }
+}
+
+.customization-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.current-font {
+  margin-top: 8px;
+  padding: 8px 12px;
+  background: var(--bg-tertiary);
+  border-radius: 4px;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.control-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 8px;
+  
+  .el-slider {
+    flex: 1;
+  }
+}
+
+.layout-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.auto-flip-setting {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-top: 8px;
+}
+
+.flip-speed-info {
+  padding: 4px 12px;
+  background: var(--bg-tertiary);
+  border-radius: 4px;
+  font-size: 13px;
+  color: var(--accent-color);
+}
+
+.reading-goal-setting {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.current-goal {
+  padding: 8px 12px;
+  background: var(--bg-secondary);
+  border-radius: 4px;
+  font-size: 13px;
+}
+
+.reading-goal-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.goal-input-row {
+  display: flex;
+  gap: 12px;
+  align-items: flex-end;
+}
+
+.goal-target-input {
+  flex: 1;
+}
+
+.goal-unit-select {
+  width: 120px;
+}
+
+.setting-item label {
+  .value {
+    margin-left: 8px;
+    color: var(--accent-color);
+    font-weight: 500;
   }
 }
 </style>

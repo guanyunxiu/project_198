@@ -2,7 +2,7 @@ import Database from 'better-sqlite3'
 import { app } from 'electron'
 import { join } from 'path'
 import { existsSync, mkdirSync } from 'fs'
-import type { Book, Category, Bookmark, ReadingProgress } from '../types'
+import type { Book, Category, Bookmark, ReadingProgress, ReadingStats, ReadingGoal, DailyReadingRecord } from '../types'
 
 let db: Database.Database | null = null
 
@@ -29,6 +29,7 @@ export function initDatabase(): void {
   createTables()
   migrateDatabase()
   insertDefaultCategory()
+  insertDefaultReadingGoal()
 }
 
 function createTables(): void {
@@ -60,6 +61,7 @@ function createTables(): void {
       notes TEXT DEFAULT '',
       summary TEXT DEFAULT '',
       tags TEXT DEFAULT '',
+      detectedAuthor TEXT DEFAULT '',
       createdAt INTEGER NOT NULL,
       updatedAt INTEGER NOT NULL,
       FOREIGN KEY (categoryId) REFERENCES categories(id) ON DELETE SET NULL
@@ -91,23 +93,21 @@ function createTables(): void {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       bookId INTEGER NOT NULL,
       date TEXT NOT NULL,
-      pagesRead INTEGER DEFAULT 0,
-      charactersRead INTEGER DEFAULT 0,
-      readingTime INTEGER DEFAULT 0,
+      readTime INTEGER DEFAULT 0,
+      readPages INTEGER DEFAULT 0,
+      readCharacters INTEGER DEFAULT 0,
+      readingSpeed INTEGER DEFAULT 0,
       createdAt INTEGER NOT NULL,
-      FOREIGN KEY (bookId) REFERENCES books(id) ON DELETE CASCADE,
-      UNIQUE(bookId, date)
+      FOREIGN KEY (bookId) REFERENCES books(id) ON DELETE CASCADE
     );
 
     CREATE TABLE IF NOT EXISTS reading_goals (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      type TEXT NOT NULL,
-      target INTEGER NOT NULL,
-      targetType TEXT NOT NULL,
-      current INTEGER DEFAULT 0,
-      periodStart INTEGER NOT NULL,
-      periodEnd INTEGER NOT NULL,
-      isCompleted INTEGER DEFAULT 0,
+      dailyTarget INTEGER NOT NULL DEFAULT 30,
+      targetUnit TEXT NOT NULL DEFAULT 'minutes',
+      startDate INTEGER NOT NULL,
+      endDate INTEGER,
+      isActive INTEGER NOT NULL DEFAULT 1,
       createdAt INTEGER NOT NULL
     );
 
@@ -116,9 +116,9 @@ function createTables(): void {
     CREATE INDEX IF NOT EXISTS idx_books_lastRead ON books(lastReadTime);
     CREATE INDEX IF NOT EXISTS idx_bookmarks_book ON bookmarks(bookId);
     CREATE INDEX IF NOT EXISTS idx_progress_book ON reading_progress(bookId);
-    CREATE INDEX IF NOT EXISTS idx_stats_date ON reading_stats(date);
     CREATE INDEX IF NOT EXISTS idx_stats_book ON reading_stats(bookId);
-    CREATE INDEX IF NOT EXISTS idx_goals_type ON reading_goals(type);
+    CREATE INDEX IF NOT EXISTS idx_stats_date ON reading_stats(date);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_stats_book_date ON reading_stats(bookId, date);
   `)
 }
 
@@ -134,6 +134,52 @@ function migrateDatabase(): void {
   if (!columnNames.includes('notes')) {
     database.exec('ALTER TABLE books ADD COLUMN notes TEXT DEFAULT \'\'')
   }
+  if (!columnNames.includes('summary')) {
+    database.exec('ALTER TABLE books ADD COLUMN summary TEXT DEFAULT \'\'')
+  }
+  if (!columnNames.includes('tags')) {
+    database.exec('ALTER TABLE books ADD COLUMN tags TEXT DEFAULT \'\'')
+  }
+  if (!columnNames.includes('detectedAuthor')) {
+    database.exec('ALTER TABLE books ADD COLUMN detectedAuthor TEXT DEFAULT \'\'')
+  }
+
+  const tables = database.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as { name: string }[]
+  const tableNames = tables.map(t => t.name)
+
+  if (!tableNames.includes('reading_stats')) {
+    database.exec(`
+      CREATE TABLE reading_stats (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        bookId INTEGER NOT NULL,
+        date TEXT NOT NULL,
+        readTime INTEGER DEFAULT 0,
+        readPages INTEGER DEFAULT 0,
+        readCharacters INTEGER DEFAULT 0,
+        readingSpeed INTEGER DEFAULT 0,
+        createdAt INTEGER NOT NULL,
+        FOREIGN KEY (bookId) REFERENCES books(id) ON DELETE CASCADE
+      );
+      CREATE INDEX idx_stats_book ON reading_stats(bookId);
+      CREATE INDEX idx_stats_date ON reading_stats(date);
+      CREATE UNIQUE INDEX idx_stats_book_date ON reading_stats(bookId, date);
+    `)
+  }
+
+  if (!tableNames.includes('reading_goals')) {
+    database.exec(`
+      CREATE TABLE reading_goals (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        dailyTarget INTEGER NOT NULL DEFAULT 30,
+        targetUnit TEXT NOT NULL DEFAULT 'minutes',
+        startDate INTEGER NOT NULL,
+        endDate INTEGER,
+        isActive INTEGER NOT NULL DEFAULT 1,
+        createdAt INTEGER NOT NULL
+      );
+    `)
+    insertDefaultReadingGoal()
+  }
 }
 
 function insertDefaultCategory(): void {
@@ -144,6 +190,19 @@ function insertDefaultCategory(): void {
     'INSERT OR IGNORE INTO categories (name, createdAt) VALUES (?, ?)'
   )
   stmt.run('未分类', now)
+}
+
+function insertDefaultReadingGoal(): void {
+  const database = getDb()
+  const count = database.prepare('SELECT COUNT(*) as count FROM reading_goals').get() as { count: number }
+  
+  if (count.count === 0) {
+    const now = Date.now()
+    database.prepare(`
+      INSERT INTO reading_goals (dailyTarget, targetUnit, startDate, isActive, createdAt)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(30, 'minutes', now, 1, now)
+  }
 }
 
 export const categoryDb = {
@@ -191,14 +250,16 @@ export const bookDb = {
         title, author, filePath, fileType, coverPath, encoding,
         totalPages, totalCharacters, categoryId, isPinned,
         lastReadPage, lastReadPosition, lastReadTime, totalReadingTime, notes,
+        summary, tags, detectedAuthor,
         createdAt, updatedAt
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
     const result = stmt.run(
       book.title, book.author, book.filePath, book.fileType, book.coverPath,
       book.encoding, book.totalPages, book.totalCharacters, book.categoryId,
       book.isPinned, book.lastReadPage, book.lastReadPosition, book.lastReadTime,
       book.totalReadingTime || 0, book.notes || '',
+      book.summary || '', book.tags || '', book.detectedAuthor || '',
       now, now
     )
     return Number(result.lastInsertRowid)
@@ -228,6 +289,31 @@ export const bookDb = {
     getDb()
       .prepare('UPDATE books SET totalReadingTime = COALESCE(totalReadingTime, 0) + ?, updatedAt = ? WHERE id = ?')
       .run(duration, Date.now(), bookId)
+  },
+
+  updateMetadata(bookId: number, metadata: { summary?: string; tags?: string; detectedAuthor?: string }): void {
+    const now = Date.now()
+    const fields: string[] = []
+    const values: unknown[] = []
+
+    if (metadata.summary !== undefined) {
+      fields.push('summary = ?')
+      values.push(metadata.summary)
+    }
+    if (metadata.tags !== undefined) {
+      fields.push('tags = ?')
+      values.push(metadata.tags)
+    }
+    if (metadata.detectedAuthor !== undefined) {
+      fields.push('detectedAuthor = ?')
+      values.push(metadata.detectedAuthor)
+    }
+
+    if (fields.length > 0) {
+      values.push(now, bookId)
+      const stmt = getDb().prepare(`UPDATE books SET ${fields.join(', ')}, updatedAt = ? WHERE id = ?`)
+      stmt.run(...values)
+    }
   },
 
   togglePin(id: number): void {
@@ -296,154 +382,276 @@ export const progressDb = {
 }
 
 export const statsDb = {
-  getByDate(date: string): ReadingStats[] {
-    return getDb()
-      .prepare('SELECT * FROM reading_stats WHERE date = ? ORDER BY createdAt DESC')
-      .all(date) as ReadingStats[]
+  getByBookId(bookId: number, startDate?: string, endDate?: string): ReadingStats[] {
+    let sql = 'SELECT * FROM reading_stats WHERE bookId = ?'
+    const params: unknown[] = [bookId]
+
+    if (startDate) {
+      sql += ' AND date >= ?'
+      params.push(startDate)
+    }
+    if (endDate) {
+      sql += ' AND date <= ?'
+      params.push(endDate)
+    }
+
+    sql += ' ORDER BY date ASC'
+    return getDb().prepare(sql).all(...params) as ReadingStats[]
   },
 
-  getByBookId(bookId: number, limit: number = 30): ReadingStats[] {
-    return getDb()
-      .prepare('SELECT * FROM reading_stats WHERE bookId = ? ORDER BY date DESC LIMIT ?')
-      .all(bookId, limit) as ReadingStats[]
-  },
-
-  getDateRange(startDate: string, endDate: string): ReadingStats[] {
+  getByDateRange(startDate: string, endDate: string): ReadingStats[] {
     return getDb()
       .prepare('SELECT * FROM reading_stats WHERE date >= ? AND date <= ? ORDER BY date ASC')
       .all(startDate, endDate) as ReadingStats[]
   },
 
-  addReading(bookId: number, pagesRead: number, charactersRead: number, readingTime: number): number {
-    const now = Date.now()
-    const date = new Date().toISOString().split('T')[0]
-    
-    const existing = getDb()
-      .prepare('SELECT * FROM reading_stats WHERE bookId = ? AND date = ?')
-      .get(bookId, date) as ReadingStats | undefined
+  getDailyStats(date: string): ReadingStats[] {
+    return getDb()
+      .prepare('SELECT * FROM reading_stats WHERE date = ?')
+      .all(date) as ReadingStats[]
+  },
 
-    if (existing) {
-      getDb()
-        .prepare(`
-          UPDATE reading_stats 
-          SET pagesRead = pagesRead + ?,
-              charactersRead = charactersRead + ?,
-              readingTime = readingTime + ?,
-              createdAt = ?
-          WHERE bookId = ? AND date = ?
-        `)
-        .run(pagesRead, charactersRead, readingTime, now, bookId, date)
-      return existing.id
-    } else {
-      const stmt = getDb().prepare(`
-        INSERT INTO reading_stats (bookId, date, pagesRead, charactersRead, readingTime, createdAt)
-        VALUES (?, ?, ?, ?, ?, ?)
-      `)
-      const result = stmt.run(bookId, date, pagesRead, charactersRead, readingTime, now)
-      return Number(result.lastInsertRowid)
+  getAverageReadingSpeed(bookId?: number): number {
+    let sql = 'SELECT AVG(readingSpeed) as avgSpeed FROM reading_stats WHERE readingSpeed > 0'
+    const params: unknown[] = []
+
+    if (bookId) {
+      sql += ' AND bookId = ?'
+      params.push(bookId)
+    }
+
+    const result = getDb().prepare(sql).get(...params) as { avgSpeed: number | null }
+    return Math.round(result.avgSpeed || 0)
+  },
+
+  getDailyTotal(date: string): { readTime: number; readPages: number; readCharacters: number } {
+    const result = getDb().prepare(`
+      SELECT 
+        COALESCE(SUM(readTime), 0) as readTime,
+        COALESCE(SUM(readPages), 0) as readPages,
+        COALESCE(SUM(readCharacters), 0) as readCharacters
+      FROM reading_stats 
+      WHERE date = ?
+    `).get(date) as { readTime: number; readPages: number; readCharacters: number }
+    
+    return result
+  },
+
+  getDailyAverages(days: number = 7): { avgReadTime: number; avgReadPages: number; avgReadCharacters: number } {
+    const result = getDb().prepare(`
+      SELECT 
+        COALESCE(AVG(dailyTime), 0) as avgReadTime,
+        COALESCE(AVG(dailyPages), 0) as avgReadPages,
+        COALESCE(AVG(dailyChars), 0) as avgReadCharacters
+      FROM (
+        SELECT 
+          date,
+          SUM(readTime) as dailyTime,
+          SUM(readPages) as dailyPages,
+          SUM(readCharacters) as dailyChars
+        FROM reading_stats
+        WHERE date >= date('now', ?)
+        GROUP BY date
+      )
+    `).get(`-${days} days`) as { avgReadTime: number; avgReadPages: number; avgReadCharacters: number }
+    
+    return {
+      avgReadTime: Math.round(result.avgReadTime),
+      avgReadPages: Math.round(result.avgReadPages),
+      avgReadCharacters: Math.round(result.avgReadCharacters)
     }
   },
 
-  getDailyAverage(days: number = 7): number {
-    const date = new Date()
-    date.setDate(date.getDate() - days)
-    const startDate = date.toISOString().split('T')[0]
+  recordReadingSession(
+    bookId: number, 
+    readTime: number, 
+    readPages: number, 
+    readCharacters: number
+  ): void {
+    const date = new Date().toISOString().split('T')[0]
+    const now = Date.now()
+    const readingSpeed = readTime > 0 ? Math.round((readCharacters / readTime) * 60) : 0
 
-    const result = getDb()
-      .prepare(`
-        SELECT AVG(readingTime) as avgTime 
-        FROM reading_stats 
-        WHERE date >= ?
-      `)
-      .get(startDate) as { avgTime: number | null }
+    const existing = getDb().prepare(
+      'SELECT id FROM reading_stats WHERE bookId = ? AND date = ?'
+    ).get(bookId, date) as { id: number } | undefined
 
-    return result.avgTime || 0
+    if (existing) {
+      getDb().prepare(`
+        UPDATE reading_stats 
+        SET 
+          readTime = readTime + ?,
+          readPages = readPages + ?,
+          readCharacters = readCharacters + ?,
+          readingSpeed = ?,
+          createdAt = ?
+        WHERE id = ?
+      `).run(readTime, readPages, readCharacters, readingSpeed, now, existing.id)
+    } else {
+      getDb().prepare(`
+        INSERT INTO reading_stats (bookId, date, readTime, readPages, readCharacters, readingSpeed, createdAt)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(bookId, date, readTime, readPages, readCharacters, readingSpeed, now)
+    }
   },
 
-  getPagesPerMinute(bookId: number): number {
-    const result = getDb()
-      .prepare(`
-        SELECT SUM(pagesRead) as totalPages, SUM(readingTime) as totalTime
-        FROM reading_stats 
-        WHERE bookId = ? AND readingTime > 0
-      `)
-      .get(bookId) as { totalPages: number | null; totalTime: number | null }
+  getReadingStreak(): number {
+    const dates = getDb().prepare(`
+      SELECT DISTINCT date 
+      FROM reading_stats 
+      WHERE readTime > 0
+      ORDER BY date DESC
+    `).all() as { date: string }[]
 
-    if (!result.totalPages || !result.totalTime) return 0
-    return result.totalPages / (result.totalTime / 60)
-  },
+    if (dates.length === 0) return 0
 
-  deleteByBookId(bookId: number): void {
-    getDb().prepare('DELETE FROM reading_stats WHERE bookId = ?').run(bookId)
+    let streak = 0
+    const today = new Date()
+    today.setHours(0, 0, 0, 0)
+
+    for (let i = 0; i < dates.length; i++) {
+      const checkDate = new Date(today)
+      checkDate.setDate(checkDate.getDate() - i)
+      const checkDateStr = checkDate.toISOString().split('T')[0]
+
+      if (dates.some(d => d.date === checkDateStr)) {
+        streak++
+      } else if (i === 0) {
+        const yesterday = new Date(today)
+        yesterday.setDate(yesterday.getDate() - 1)
+        const yesterdayStr = yesterday.toISOString().split('T')[0]
+        if (dates.some(d => d.date === yesterdayStr)) {
+          streak++
+        } else {
+          break
+        }
+      } else {
+        break
+      }
+    }
+
+    return streak
   }
 }
 
 export const goalDb = {
-  getAll(): ReadingGoal[] {
+  getActiveGoal(): ReadingGoal | undefined {
+    return getDb()
+      .prepare('SELECT * FROM reading_goals WHERE isActive = 1 ORDER BY createdAt DESC LIMIT 1')
+      .get() as ReadingGoal | undefined
+  },
+
+  getAllGoals(): ReadingGoal[] {
     return getDb()
       .prepare('SELECT * FROM reading_goals ORDER BY createdAt DESC')
       .all() as ReadingGoal[]
   },
 
-  getActive(): ReadingGoal | null {
-    const now = Date.now()
-    return getDb()
-      .prepare('SELECT * FROM reading_goals WHERE periodStart <= ? AND periodEnd >= ? ORDER BY createdAt DESC LIMIT 1')
-      .get(now, now) as ReadingGoal | null
-  },
-
   create(goal: Omit<ReadingGoal, 'id' | 'createdAt'>): number {
     const now = Date.now()
     const stmt = getDb().prepare(`
-      INSERT INTO reading_goals (type, target, targetType, current, periodStart, periodEnd, isCompleted, createdAt)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO reading_goals (dailyTarget, targetUnit, startDate, endDate, isActive, createdAt)
+      VALUES (?, ?, ?, ?, ?, ?)
     `)
     const result = stmt.run(
-      goal.type, goal.target, goal.targetType, goal.current,
-      goal.periodStart, goal.periodEnd, goal.isCompleted, now
+      goal.dailyTarget, goal.targetUnit, goal.startDate, 
+      goal.endDate || null, goal.isActive, now
     )
     return Number(result.lastInsertRowid)
   },
 
-  updateProgress(id: number, increment: number): number {
-    const goal = getDb().prepare('SELECT * FROM reading_goals WHERE id = ?').get(id) as ReadingGoal | undefined
-    if (!goal) return 0
+  update(id: number, updates: Partial<ReadingGoal>): void {
+    const fields = Object.keys(updates).filter(k => k !== 'id')
+    if (fields.length === 0) return
 
-    const newCurrent = goal.current + increment
-    const isCompleted = newCurrent >= goal.target ? 1 : 0
+    const setClause = fields.map(f => `${f} = ?`).join(', ')
+    const values = fields.map(f => (updates as Record<string, unknown>)[f])
+    values.push(id)
 
-    getDb()
-      .prepare('UPDATE reading_goals SET current = ?, isCompleted = ? WHERE id = ?')
-      .run(newCurrent, isCompleted, id)
-
-    return newCurrent
-  },
-
-  checkIn(type: string): { success: boolean; streak: number } {
-    const today = new Date().toISOString().split('T')[0]
-    const todayStart = new Date(today).getTime()
-    
-    const existingToday = getDb()
-      .prepare('SELECT * FROM reading_goals WHERE type = ? AND periodStart = ?')
-      .get(type, todayStart) as ReadingGoal | undefined
-
-    if (existingToday) {
-      return { success: false, streak: 0 }
-    }
-
-    const result = getDb()
-      .prepare(`
-        SELECT COUNT(*) as count 
-        FROM reading_goals 
-        WHERE type = ? AND isCompleted = 1 
-        ORDER BY periodStart DESC
-      `)
-      .get(type) as { count: number }
-
-    return { success: true, streak: result.count + 1 }
+    const stmt = getDb().prepare(`UPDATE reading_goals SET ${setClause} WHERE id = ?`)
+    stmt.run(...values)
   },
 
   delete(id: number): void {
     getDb().prepare('DELETE FROM reading_goals WHERE id = ?').run(id)
+  },
+
+  getDailyRecords(days: number = 7): DailyReadingRecord[] {
+    const records: DailyReadingRecord[] = []
+    const goal = this.getActiveGoal()
+    
+    if (!goal) return records
+
+    for (let i = days - 1; i >= 0; i--) {
+      const date = new Date()
+      date.setDate(date.getDate() - i)
+      const dateStr = date.toISOString().split('T')[0]
+
+      const dailyTotal = statsDb.getDailyTotal(dateStr)
+      
+      let current = 0
+      switch (goal.targetUnit) {
+        case 'minutes':
+          current = Math.round(dailyTotal.readTime / 60)
+          break
+        case 'pages':
+          current = dailyTotal.readPages
+          break
+        case 'characters':
+          current = dailyTotal.readCharacters
+          break
+      }
+
+      records.push({
+        date: dateStr,
+        readTime: dailyTotal.readTime,
+        readPages: dailyTotal.readPages,
+        readCharacters: dailyTotal.readCharacters,
+        targetReached: current >= goal.dailyTarget ? 1 : 0
+      })
+    }
+
+    return records
+  },
+
+  getGoalProgress(): {
+    goal: ReadingGoal
+    current: number
+    target: number
+    percentage: number
+    streak: number
+    records: DailyReadingRecord[]
+  } | null {
+    const goal = this.getActiveGoal()
+    if (!goal) return null
+
+    const today = new Date().toISOString().split('T')[0]
+    const dailyTotal = statsDb.getDailyTotal(today)
+    
+    let current = 0
+    switch (goal.targetUnit) {
+      case 'minutes':
+        current = Math.round(dailyTotal.readTime / 60)
+        break
+      case 'pages':
+        current = dailyTotal.readPages
+        break
+      case 'characters':
+        current = dailyTotal.readCharacters
+        break
+    }
+
+    const percentage = goal.dailyTarget > 0 ? Math.min(100, Math.round((current / goal.dailyTarget) * 100)) : 0
+    const streak = statsDb.getReadingStreak()
+    const records = this.getDailyRecords(7)
+
+    return {
+      goal,
+      current,
+      target: goal.dailyTarget,
+      percentage,
+      streak,
+      records
+    }
   }
 }

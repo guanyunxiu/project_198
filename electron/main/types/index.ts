@@ -15,6 +15,9 @@ export interface Book {
   lastReadTime: number
   totalReadingTime: number
   notes: string
+  summary: string
+  tags: string
+  detectedAuthor: string
   createdAt: number
   updatedAt: number
 }
@@ -50,10 +53,20 @@ export interface ReadingConfig {
   lineHeight: number
   letterSpacing: number
   pageMargin: number
-  theme: 'light' | 'dark' | 'eye'
+  theme: 'light' | 'dark' | 'eye' | 'custom'
   readMode: 'scroll' | 'page'
   pageChars: number
   highlightColor: string
+  backgroundImage: string | null
+  customFont: string | null
+  customFontPath: string | null
+  pageLayout: 'single' | 'double'
+  orientation: 'portrait' | 'landscape'
+  opacity: number
+  autoFlipEnabled: boolean
+  autoFlipSpeed: number
+  autoFlipInterval: number
+  themeTemplate: string
 }
 
 export interface ShortcutConfig {
@@ -66,6 +79,7 @@ export interface ShortcutConfig {
   toggleAlwaysOnTop: string
   search: string
   toggleSidebar: string
+  toggleAutoFlip: string
 }
 
 export interface SearchResult {
@@ -111,6 +125,7 @@ export interface Chapter {
   startPosition: number
   endPosition: number
   startPage: number
+  wordCount?: number
 }
 
 export interface PageContent {
@@ -131,4 +146,77 @@ export interface ExportBookData {
   book: Omit<Book, 'id' | 'createdAt' | 'updatedAt'>
   bookmarks: Omit<Bookmark, 'id' | 'createdAt'>[]
   progress: ReadingProgress[]
+}
+
+export interface ThemeTemplate {
+  id: string
+  name: string
+  bgColor: string
+  textColor: string
+  accentColor: string
+  secondaryBg: string
+  borderColor: string
+  preview: string
+}
+
+export interface ReadingStats {
+  id?: number
+  bookId: number
+  date: string
+  readTime: number
+  readPages: number
+  readCharacters: number
+  readingSpeed: number
+  createdAt: number
+}
+
+export interface ReadingGoal {
+  id: number
+  dailyTarget: number
+  targetUnit: 'pages' | 'minutes' | 'characters'
+  startDate: number
+  endDate: number
+  isActive: number
+  createdAt: number
+}
+
+export interface DailyReadingRecord {
+  date: string
+  readTime: number
+  readPages: number
+  readCharacters: number
+  targetReached: number
+}
+
+export interface ReadingGoalProgress {
+  goal: ReadingGoal
+  current: number
+  target: number
+  percentage: number
+  streak: number
+  records: DailyReadingRecord[]
+}
+
+export interface TextCleanupOptions {
+  removeDuplicateChapters: boolean
+  removeEmptyLines: boolean
+  fixGarbledText: boolean
+  normalizePunctuation: boolean
+  removeExtraSpaces: boolean
+}
+
+export interface SmartChapterOptions {
+  enableSmartSegmentation: boolean
+  minChapterLength: number
+  mergeShortChapters: boolean
+  autoDetectTitlePatterns: boolean
+}
+
+export interface BookMetadata {
+  title: string
+  author: string
+  summary: string
+  tags: string[]
+  wordCount: number
+  chapterCount: number
 }

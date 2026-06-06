@@ -12,7 +12,9 @@ const electronAPI = {
     addScanPath: (path) => electron.ipcRenderer.invoke("app:addScanPath", path),
     removeScanPath: (path) => electron.ipcRenderer.invoke("app:removeScanPath", path),
     addFavoritePath: (path) => electron.ipcRenderer.invoke("app:addFavoritePath", path),
-    removeFavoritePath: (path) => electron.ipcRenderer.invoke("app:removeFavoritePath", path)
+    removeFavoritePath: (path) => electron.ipcRenderer.invoke("app:removeFavoritePath", path),
+    getThemeTemplates: () => electron.ipcRenderer.invoke("app:getThemeTemplates"),
+    applyThemeTemplate: (templateId) => electron.ipcRenderer.invoke("app:applyThemeTemplate", templateId)
   },
   window: {
     toggleFullscreen: () => electron.ipcRenderer.invoke("window:toggleFullscreen"),
@@ -36,11 +38,12 @@ const electronAPI = {
     delete: (id) => electron.ipcRenderer.invoke("book:delete", id),
     updateProgress: (bookId, page, position) => electron.ipcRenderer.invoke("book:updateProgress", bookId, page, position),
     addReadingTime: (bookId, duration) => electron.ipcRenderer.invoke("book:addReadingTime", bookId, duration),
+    updateMetadata: (bookId, metadata) => electron.ipcRenderer.invoke("book:updateMetadata", bookId, metadata),
+    getMetadata: (bookId) => electron.ipcRenderer.invoke("book:getMetadata", bookId),
     batchImport: (filePaths) => electron.ipcRenderer.invoke("book:batchImport", filePaths),
     batchExport: (bookIds) => electron.ipcRenderer.invoke("book:batchExport", bookIds),
     exportJson: (data) => electron.ipcRenderer.invoke("book:exportJson", data),
-    importJson: () => electron.ipcRenderer.invoke("book:importJson"),
-    updateSmartInfo: (bookId, updates) => electron.ipcRenderer.invoke("book:updateSmartInfo", bookId, updates)
+    importJson: () => electron.ipcRenderer.invoke("book:importJson")
   },
   bookmark: {
     getByBookId: (bookId) => electron.ipcRenderer.invoke("bookmark:getByBookId", bookId),
@@ -51,6 +54,25 @@ const electronAPI = {
     getByBookId: (bookId, limit = 100) => electron.ipcRenderer.invoke("progress:getByBookId", bookId, limit),
     add: (progress) => electron.ipcRenderer.invoke("progress:add", progress)
   },
+  stats: {
+    getByBookId: (bookId, startDate, endDate) => electron.ipcRenderer.invoke("stats:getByBookId", bookId, startDate, endDate),
+    getByDateRange: (startDate, endDate) => electron.ipcRenderer.invoke("stats:getByDateRange", startDate, endDate),
+    getDailyStats: (date) => electron.ipcRenderer.invoke("stats:getDailyStats", date),
+    getDailyTotal: (date) => electron.ipcRenderer.invoke("stats:getDailyTotal", date),
+    getDailyAverages: (days = 7) => electron.ipcRenderer.invoke("stats:getDailyAverages", days),
+    getAverageSpeed: (bookId) => electron.ipcRenderer.invoke("stats:getAverageSpeed", bookId),
+    getReadingStreak: () => electron.ipcRenderer.invoke("stats:getReadingStreak"),
+    recordSession: (bookId, readTime, readPages, readChars) => electron.ipcRenderer.invoke("stats:recordSession", bookId, readTime, readPages, readChars)
+  },
+  goal: {
+    getActiveGoal: () => electron.ipcRenderer.invoke("goal:getActiveGoal"),
+    getAllGoals: () => electron.ipcRenderer.invoke("goal:getAllGoals"),
+    getGoalProgress: () => electron.ipcRenderer.invoke("goal:getGoalProgress"),
+    getDailyRecords: (days = 7) => electron.ipcRenderer.invoke("goal:getDailyRecords", days),
+    create: (goal) => electron.ipcRenderer.invoke("goal:create", goal),
+    update: (id, updates) => electron.ipcRenderer.invoke("goal:update", id, updates),
+    delete: (id) => electron.ipcRenderer.invoke("goal:delete", id)
+  },
   file: {
     listDirectory: (dirPath) => electron.ipcRenderer.invoke("file:listDirectory", dirPath),
     scanBooks: (paths) => electron.ipcRenderer.invoke("file:scanBooks", paths),
@@ -58,8 +80,8 @@ const electronAPI = {
     openFolderDialog: () => electron.ipcRenderer.invoke("file:openFolderDialog"),
     detectEncoding: (filePath) => electron.ipcRenderer.invoke("file:detectEncoding", filePath),
     readText: (filePath, encoding) => electron.ipcRenderer.invoke("file:readText", filePath, encoding),
-    uploadBackground: () => electron.ipcRenderer.invoke("file:uploadBackground"),
-    uploadFont: () => electron.ipcRenderer.invoke("file:uploadFont")
+    selectImage: () => electron.ipcRenderer.invoke("file:selectImage"),
+    selectFont: () => electron.ipcRenderer.invoke("file:selectFont")
   },
   reader: {
     openBook: (bookId, pageChars = 800) => electron.ipcRenderer.invoke("reader:openBook", bookId, pageChars),
@@ -70,30 +92,12 @@ const electronAPI = {
     search: (bookId, keyword) => electron.ipcRenderer.invoke("reader:search", bookId, keyword),
     splitVolume: (bookId, options) => electron.ipcRenderer.invoke("reader:splitVolume", bookId, options),
     generateToc: (content) => electron.ipcRenderer.invoke("reader:generateToc", content),
-    smartGenerateToc: (content) => electron.ipcRenderer.invoke("reader:smartGenerateToc", content),
+    closeBook: (bookId) => electron.ipcRenderer.invoke("reader:closeBook", bookId),
     cleanText: (content, options) => electron.ipcRenderer.invoke("reader:cleanText", content, options),
-    getSmartInfo: (bookId) => electron.ipcRenderer.invoke("reader:getSmartInfo", bookId),
-    goToPercent: (bookId, percent) => electron.ipcRenderer.invoke("reader:goToPercent", bookId, percent),
-    closeBook: (bookId) => electron.ipcRenderer.invoke("reader:closeBook", bookId)
-  },
-  stats: {
-    getByDate: (date) => electron.ipcRenderer.invoke("stats:getByDate", date),
-    getByBookId: (bookId, limit = 30) => electron.ipcRenderer.invoke("stats:getByBookId", bookId, limit),
-    getDateRange: (startDate, endDate) => electron.ipcRenderer.invoke("stats:getDateRange", startDate, endDate),
-    addReading: (bookId, pagesRead, charactersRead, readingTime) => electron.ipcRenderer.invoke("stats:addReading", bookId, pagesRead, charactersRead, readingTime),
-    getDailyAverage: (days = 7) => electron.ipcRenderer.invoke("stats:getDailyAverage", days),
-    getPagesPerMinute: (bookId) => electron.ipcRenderer.invoke("stats:getPagesPerMinute", bookId)
-  },
-  goals: {
-    getAll: () => electron.ipcRenderer.invoke("goals:getAll"),
-    getActive: () => electron.ipcRenderer.invoke("goals:getActive"),
-    create: (goal) => electron.ipcRenderer.invoke("goals:create", goal),
-    updateProgress: (id, increment) => electron.ipcRenderer.invoke("goals:updateProgress", id, increment),
-    checkIn: (type) => electron.ipcRenderer.invoke("goals:checkIn", type),
-    delete: (id) => electron.ipcRenderer.invoke("goals:delete", id)
-  },
-  theme: {
-    getPresetThemes: () => electron.ipcRenderer.invoke("theme:getPresetThemes")
+    analyzeQuality: (content) => electron.ipcRenderer.invoke("reader:analyzeQuality", content),
+    extractMetadata: (content, title) => electron.ipcRenderer.invoke("reader:extractMetadata", content, title),
+    smartRechapters: (bookId, options) => electron.ipcRenderer.invoke("reader:smartRechapters", bookId, options),
+    goToPercentage: (bookId, percentage) => electron.ipcRenderer.invoke("reader:goToPercentage", bookId, percentage)
   },
   shell: {
     openExternal: (url) => electron.ipcRenderer.invoke("shell:openExternal", url),
